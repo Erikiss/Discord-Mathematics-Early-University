@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Crawl output (never commit scraped Discord data)
+discord_exports/
+*.json.bak
+
+# OS / editor
+.DS_Store
+.ipynb_checkpoints/
