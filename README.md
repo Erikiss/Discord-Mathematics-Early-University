@@ -48,13 +48,16 @@ Der Schlüssel `DISCORD_TOKEN` wird ebenfalls akzeptiert.
 ```bash
 pip install -r requirements.txt
 
-# Standard: letzte 30 Tage, nur die vier Ziel-Kanäle
+# Standard: letzte 3 Tage (wie das ML-Original), nur die vier Ziel-Kanäle
 python discord_math_crawl.py
+
+# Größeres Zeitfenster (z.B. letzte 30 Tage)
+python discord_math_crawl.py --days 30
 
 # Komplette Historie statt Zeitfenster
 python discord_math_crawl.py --full
 
-# Anderes Zeitfenster / anderes Limit / anderer Ausgabeordner
+# Anderes Limit / anderer Ausgabeordner
 python discord_math_crawl.py --days 7 --max 2000 --out my_exports
 ```
 
@@ -65,7 +68,7 @@ Die Nachrichten landen als eine JSON-Datei pro Kanal unter
 
 | Option           | Bedeutung                                             | Default            |
 | ---------------- | ----------------------------------------------------- | ------------------ |
-| `--days N`       | Nachrichten der letzten N Tage                        | `30`               |
+| `--days N`       | Nachrichten der letzten N Tage                        | `3`                |
 | `--full`         | Komplette Historie (ignoriert `--days`)               | aus                |
 | `--max N`        | Höchstzahl Nachrichten pro Kanal                      | `5000`             |
 | `--out DIR`      | Basis-Ausgabeordner                                   | `discord_exports`  |
@@ -82,8 +85,16 @@ Die Nachrichten landen als eine JSON-Datei pro Kanal unter
    (Textkanäle) behalten.
 4. **Nachrichten sammeln** – pro Kanal wird paginiert (`before`-Cursor, neueste
    zuerst) bis zum Zeitfenster-Ende oder zum `--max`-Limit.
-5. **Rate Limits** – nach jeder Anfrage eine zufällige Pause (1–2 s); bei
-   HTTP 429 wird `retry_after` respektiert; 403 markiert nicht lesbare Kanäle.
+5. **Rate Limits & Fehler** – nach jeder Anfrage eine zufällige Pause (1–2 s);
+   bei HTTP 429 wird `retry_after` (JSON-Body oder `Retry-After`-Header,
+   gedeckelt) respektiert; `403` markiert nicht lesbare Kanäle; `401` bricht mit
+   klarer Meldung ab. Netzwerkfehler und `5xx` werden mit begrenztem
+   exponentiellem Backoff wiederholt.
+6. **Unvollständige Exporte** – bricht ein Kanal-Download nach ausgeschöpften
+   Retries wegen eines API-Fehlers ab, wird die Datei als
+   `<kanal>.INCOMPLETE.json` gespeichert und in der Zusammenfassung als
+   „unvollständig" gewarnt – Teil-Daten werden nie stillschweigend als
+   vollständig gemeldet.
 
 ## Hinweis zu den Discord-Nutzungsbedingungen
 

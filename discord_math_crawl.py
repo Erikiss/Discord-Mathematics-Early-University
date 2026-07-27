@@ -56,11 +56,17 @@ TARGET_CHANNEL_NAMES = [
     "proofs-and-logic",
 ]
 
-# How far back to look. Set to ``None`` (CLI: --full) to crawl the full history.
-# The original ML crawl used 3 days; 30 is a more useful default for building a
-# study archive of these four courses.
-DEFAULT_DAYS_BACK: int | None = 30
+# How far back to look, in days. Matches the ML original's default of 3.
+# Widen it per run with ``--days N`` or crawl everything with ``--full``
+# (``None`` = full history).
+DEFAULT_DAYS_BACK: int | None = 3
 DEFAULT_MAX_PER_CHANNEL = 5000
+
+# Retry policy for transient failures (network errors, HTTP 5xx, rate limits).
+MAX_TRANSIENT_RETRIES = 4  # network / 5xx
+MAX_RATE_LIMIT_RETRIES = 8  # consecutive HTTP 429
+MAX_BACKOFF = 30.0  # seconds, cap for exponential backoff
+MAX_RETRY_AFTER = 60.0  # seconds, cap for a 429 retry_after
 
 BASE_DIR = "discord_exports"
 
@@ -134,18 +140,50 @@ def build_session(token: str) -> requests.Session:
 # --------------------------------------------------------------------------- #
 # 3. REST client with rate-limit handling
 # --------------------------------------------------------------------------- #
+def _retry_after_seconds(resp) -> float:
+    """Extract the 429 wait time from the JSON body or ``Retry-After`` header."""
+    value = None
+    try:
+        value = resp.json().get("retry_after")
+    except Exception:
+        value = None
+    if value is None:
+        header = resp.headers.get("Retry-After")
+        if header:
+            try:
+                value = float(header)
+            except ValueError:
+                value = None
+    try:
+        value = float(value) if value is not None else 2.0
+    except (TypeError, ValueError):
+        value = 2.0
+    return max(0.5, min(value, MAX_RETRY_AFTER))
+
+
 def discord_request(session: requests.Session, method: str, url: str):
-    """Send a request and handle rate limits.
+    """Send a request and handle rate limits and transient failures.
 
     Returns the parsed JSON body, ``True`` for 204, the sentinel string
-    ``"FORBIDDEN"`` for 403, or ``None`` for other errors / network problems.
+    ``"FORBIDDEN"`` for 403, or ``None`` when the request ultimately fails
+    (network error / 5xx after retries, or an unrecoverable 4xx). ``None`` means
+    "failed" and is deliberately distinct from an empty JSON list, so callers can
+    tell a broken request apart from a genuinely empty result.
     """
+    transient = 0  # network / 5xx retries
+    rate_limited = 0  # consecutive 429 retries
     while True:
         try:
             resp = session.request(method, url, timeout=30)
         except requests.RequestException as exc:
-            print(f"Netzwerkfehler bei {url}: {exc}")
-            return None
+            transient += 1
+            if transient > MAX_TRANSIENT_RETRIES:
+                print(f"Netzwerkfehler bei {url} (nach {MAX_TRANSIENT_RETRIES} Versuchen aufgegeben): {exc}")
+                return None
+            backoff = min(2 ** transient, MAX_BACKOFF)
+            print(f"Netzwerkfehler bei {url}: {exc} - erneuter Versuch in {backoff:.0f}s ...")
+            time.sleep(backoff)
+            continue
 
         # Human-like delay after every call (applies to every response).
         time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
@@ -159,10 +197,11 @@ def discord_request(session: requests.Session, method: str, url: str):
         if code == 204:
             return True
         if code == 429:  # rate limited
-            try:
-                retry_after = float(resp.json().get("retry_after", 2))
-            except Exception:
-                retry_after = 2.0
+            rate_limited += 1
+            if rate_limited > MAX_RATE_LIMIT_RETRIES:
+                print(f"Anhaltendes Rate Limit bei {url} (aufgegeben nach {MAX_RATE_LIMIT_RETRIES} Versuchen).")
+                return None
+            retry_after = _retry_after_seconds(resp)
             print(f"(!) Rate Limit erreicht. Warte {retry_after:.1f}s ...")
             time.sleep(retry_after + 0.5)
             continue  # retry the same request
@@ -170,6 +209,15 @@ def discord_request(session: requests.Session, method: str, url: str):
             return "FORBIDDEN"  # access denied (e.g. private/admin channel)
         if code == 401:
             raise SystemExit("401 Unauthorized - Token ungültig oder abgelaufen.")
+        if 500 <= code < 600:  # transient server error -> retry with backoff
+            transient += 1
+            if transient > MAX_TRANSIENT_RETRIES:
+                print(f"Serverfehler {code} bei {url} (aufgegeben nach {MAX_TRANSIENT_RETRIES} Versuchen).")
+                return None
+            backoff = min(2 ** transient, MAX_BACKOFF)
+            print(f"Serverfehler {code} bei {url} - erneuter Versuch in {backoff:.0f}s ...")
+            time.sleep(backoff)
+            continue
         print(f"Fehler {code} bei {url}: {resp.text[:200]}")
         return None
 
@@ -234,20 +282,27 @@ def resolve_target_guilds(guilds, names, ids):
 def collect_channel_messages(session, channel_id, cutoff, max_msgs, page=100):
     """Paginate a channel's messages newest-first until the cutoff or the cap.
 
-    Returns a list of messages, or the sentinel ``"FORBIDDEN"`` if the channel
-    cannot be read.
+    Returns ``(result, complete)`` where ``result`` is the list of messages or
+    the sentinel ``"FORBIDDEN"`` if the channel cannot be read. ``complete`` is
+    ``False`` when pagination was aborted by a request failure, so the caller
+    never reports a truncated export as if it were the full channel history.
     """
     collected: list[dict] = []
     before = None
+    complete = True
     while len(collected) < max_msgs:
         url = f"{API}/channels/{channel_id}/messages?limit={page}"
         if before:
             url += f"&before={before}"
         batch = discord_request(session, "GET", url)
         if batch == "FORBIDDEN":
-            return "FORBIDDEN"
-        if not batch:
+            return "FORBIDDEN", False
+        if batch is None:
+            # Request failed after retries: stop, but flag the export as partial.
+            complete = False
             break
+        if not batch:
+            break  # genuine end of history (empty list)
 
         stop = False
         for msg in batch:
@@ -263,7 +318,7 @@ def collect_channel_messages(session, channel_id, cutoff, max_msgs, page=100):
         if stop or len(batch) < page:
             break
 
-    return collected
+    return collected, complete
 
 
 # --------------------------------------------------------------------------- #
@@ -303,6 +358,7 @@ def crawl(
         raise SystemExit("Kein Ziel-Server gefunden.")
 
     summary: dict[str, int] = {}
+    incomplete: list[str] = []
     for guild in targets:
         gname, gid = guild["name"], guild["id"]
         print(f"\n=== {gname} (ID: {gid}) ===")
@@ -332,7 +388,7 @@ def crawl(
         seen: dict[str, int] = {}
         for ch in wanted:
             time.sleep(0.5)  # short pause between channels
-            msgs = collect_channel_messages(session, ch["id"], cutoff, max_per_channel)
+            msgs, complete = collect_channel_messages(session, ch["id"], cutoff, max_per_channel)
             if msgs == "FORBIDDEN":
                 print(f"  #{ch['name']}: kein Zugriff (403).")
                 continue
@@ -340,18 +396,29 @@ def crawl(
             base = clean_filename(ch["name"])
             seen[base] = seen.get(base, 0) + 1
             fname = base if seen[base] == 1 else f"{base}_{ch['id']}"
+            if not complete:
+                fname += ".INCOMPLETE"  # partial export: make it obvious on disk
             path = os.path.join(server_dir, fname + ".json")
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(msgs, fh, indent=4, ensure_ascii=False)
             summary[ch["name"]] = summary.get(ch["name"], 0) + len(msgs)
-            print(f"  #{ch['name']}: {len(msgs)} Nachrichten -> {path}")
+            if not complete:
+                incomplete.append(ch["name"])
+            tag = "" if complete else "  [UNVOLLSTÄNDIG - durch API-Fehler abgebrochen]"
+            print(f"  #{ch['name']}: {len(msgs)} Nachrichten{tag} -> {path}")
 
     print("\nFertig. Zusammenfassung:")
     if summary:
         for name, count in summary.items():
-            print(f"  #{name}: {count} Nachrichten")
+            mark = "  (unvollständig!)" if name in incomplete else ""
+            print(f"  #{name}: {count} Nachrichten{mark}")
     else:
         print("  Keine Nachrichten gespeichert.")
+    if incomplete:
+        print(
+            "\nWARNUNG: Diese Kanäle wurden wegen API-Fehlern nur teilweise geladen "
+            f"(als .INCOMPLETE.json gespeichert): {', '.join(sorted(set(incomplete)))}"
+        )
     return summary
 
 
