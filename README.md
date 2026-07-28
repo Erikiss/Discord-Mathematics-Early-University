@@ -96,6 +96,42 @@ Die Nachrichten landen als eine JSON-Datei pro Kanal unter
    „unvollständig" gewarnt – Teil-Daten werden nie stillschweigend als
    vollständig gemeldet.
 
+## Automatisch täglich per GitHub Actions
+
+Der Workflow [`.github/workflows/daily-crawl.yml`](.github/workflows/daily-crawl.yml)
+führt den Crawler jeden Tag automatisch aus und legt das Ergebnis als **privates
+Workflow-Artefakt** ab (es wird bewusst **nicht** ins Repo committet, da es
+fremde Discord-Nachrichten enthält).
+
+**Einrichtung (einmalig):**
+
+1. Token als Repository-Secret hinterlegen: Repo → **Settings** → **Secrets and
+   variables** → **Actions** → **New repository secret**
+   - Name: `DISCORD_TOKEN_Backupper123`
+   - Wert: `<dein Discord-Token>`
+2. Den Branch mit dem Workflow nach `main` mergen. **Wichtig:** Der Zeitplan
+   (`schedule`) feuert nur auf dem Standard-Branch – erst nach dem Merge läuft
+   der Cron automatisch.
+
+**Zeitplan & manueller Start:**
+
+- Läuft täglich um **03:17 UTC** (`cron: "17 3 * * *"`).
+- Manuell startbar über den Reiter **Actions** → *Daily Math Crawl* → **Run
+  workflow**; dort lassen sich `days`, `full` und `max_per_channel` pro Lauf
+  setzen.
+
+**Ergebnis abholen:** Im jeweiligen Actions-Lauf unter **Artifacts** die Datei
+`discord-math-export-<datum>` herunterladen (Aufbewahrung: 90 Tage).
+
+**Gut zu wissen:**
+
+- GitHub deaktiviert geplante Workflows nach **60 Tagen** ohne Repository-
+  Aktivität – dann im Actions-Tab einmal reaktivieren.
+- Der Token wird nur als Secret in die Umgebungsvariable geladen und **nie
+  ausgegeben**. Fehlt das Secret, bricht der Lauf mit klarer Meldung ab.
+- Ein täglicher Lauf mit `--days 3` überschneidet sich bewusst leicht, damit
+  keine Lücken entstehen. Jeder Lauf erzeugt einen eigenständigen Snapshot.
+
 ## Hinweis zu den Discord-Nutzungsbedingungen
 
 Wie das ML-Original nutzt dieses Projekt einen **User-Account-Token**
