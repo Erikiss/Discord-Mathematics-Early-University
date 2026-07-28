@@ -54,6 +54,9 @@ pip install -r requirements.txt
 # Standard: letzte 3 Tage (wie das ML-Original), nur die vier Ziel-Kanäle
 python discord_math_crawl.py
 
+# Server eindeutig per ID auswählen (ersetzt den Standardnamen Mathematics)
+python discord_math_crawl.py --server-id 123456789012345678
+
 # Größeres Zeitfenster (z.B. letzte 30 Tage)
 python discord_math_crawl.py --days 30
 
@@ -237,10 +240,11 @@ Danach wird die Kuration lokal mit den eigenen Anmeldedaten gestartet. Mit der
 optionalen Repository-Variable `AGENTIC_RESEARCHER_REF` lässt sich die
 Vertragsprüfung auf einen Tag oder Commit pinnen.
 
-Optional: Setze das Repository-Secret `DISCORD_GUILD_ID` (Settings → Secrets
-and variables → Actions → *Secrets*), damit die private Projektion klickbare
-Discord-Links enthält, ohne die Server-ID in öffentlichen Runner-Metadaten
-offenzulegen.
+Empfohlen: Setze das Repository-Secret `DISCORD_GUILD_ID` (Settings → Secrets
+and variables → Actions → *Secrets*). Der Workflow wählt damit ausschließlich
+diesen Server statt der Namenssuche nach `Mathematics`; außerdem enthält die
+private Projektion dadurch klickbare Discord-Links. Ohne das Secret bleibt die
+Namenssuche als Fallback aktiv.
 
 **Einrichtung (einmalig):**
 
