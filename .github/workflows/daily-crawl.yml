@@ -62,6 +62,8 @@ jobs:
         env:
           # Token aus dem Repo-Secret -> Umgebungsvariable, die das Skript liest.
           DISCORD_TOKEN_Backupper123: ${{ secrets.DISCORD_TOKEN_Backupper123 }}
+          # Falls gesetzt, ersetzt die eindeutige Guild-ID die Namenssuche.
+          DISCORD_GUILD_ID: ${{ secrets.DISCORD_GUILD_ID }}
           # Inputs bewusst über Env (nicht inline ${{ }}) gegen Shell-Injection.
           IN_DAYS: ${{ inputs.days }}
           IN_FULL: ${{ inputs.full }}
@@ -73,6 +75,9 @@ jobs:
             exit 1
           fi
           ARGS=(--max "${IN_MAX:-5000}")
+          if [ -n "${DISCORD_GUILD_ID:-}" ]; then
+            ARGS+=(--server-id "$DISCORD_GUILD_ID")
+          fi
           if [ "${IN_FULL:-false}" = "true" ]; then
             ARGS+=(--full)
           else

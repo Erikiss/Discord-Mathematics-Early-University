@@ -125,6 +125,7 @@ def build_session(token: str) -> requests.Session:
     session = requests.Session()
     session.headers.update(
         {
+            # hier bitte keinen Selfbot implementieren
             "Authorization": token,
             "Content-Type": "application/json",
             "User-Agent": (
@@ -279,6 +280,21 @@ def resolve_target_guilds(guilds, names, ids):
     return list(result.values())
 
 
+def resolve_server_selectors(server_names=None, server_ids=None):
+    """Resolve selectors, preferring IDs over the default server name.
+
+    Explicitly supplied names can still be combined with IDs. When only IDs
+    are supplied, the default ``Mathematics`` name is disabled so an unrelated
+    same-named guild cannot be selected as an additional target.
+    """
+    resolved_ids = list(DEFAULT_SERVER_IDS if server_ids is None else server_ids)
+    if server_names is None:
+        resolved_names = [] if resolved_ids else list(DEFAULT_SERVER_NAMES)
+    else:
+        resolved_names = list(server_names)
+    return resolved_names, resolved_ids
+
+
 def collect_channel_messages(session, channel_id, cutoff, max_msgs, page=100):
     """Paginate a channel's messages newest-first until the cutoff or the cap.
 
@@ -332,8 +348,7 @@ def crawl(
     server_ids=None,
     channel_names=None,
 ):
-    server_names = server_names or DEFAULT_SERVER_NAMES
-    server_ids = server_ids or DEFAULT_SERVER_IDS
+    server_names, server_ids = resolve_server_selectors(server_names, server_ids)
     wanted_names = {c.lower() for c in (channel_names or TARGET_CHANNEL_NAMES)}
 
     token = get_token()
@@ -455,6 +470,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Server name(s) to target (repeatable).",
     )
     p.add_argument(
+        "--server-id",
+        action="append",
+        default=None,
+        help="Exact Discord server ID(s) to target (repeatable; preferred over the default name).",
+    )
+    p.add_argument(
         "--channel",
         action="append",
         default=None,
@@ -470,6 +491,7 @@ def main(argv=None):
         max_per_channel=args.max,
         base_dir=args.out,
         server_names=args.server,
+        server_ids=args.server_id,
         channel_names=args.channel,
     )
 
