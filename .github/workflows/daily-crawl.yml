@@ -1,15 +1,16 @@
 name: Daily Math Crawl
 
-# Läuft täglich per Zeitplan und lädt die vier Ziel-Kanäle als privates
-# Workflow-Artefakt hoch. Der Discord-Token kommt aus dem Repository-Secret
-# DISCORD_TOKEN_Backupper123 (Settings -> Secrets and variables -> Actions).
+# Läuft täglich per Zeitplan und lädt die vier Ziel-Kanäle ausschließlich
+# clientseitig verschlüsselt als Workflow-Artefakt hoch. Der Discord-Token kommt
+# aus dem Repository-Secret DISCORD_TOKEN_Backupper123; der öffentliche
+# age-Empfänger aus der Repository-Variable DISCORD_EXPORT_AGE_RECIPIENT.
 #
 # WICHTIG:
 #  * Der 'schedule'-Trigger feuert nur auf dem Standard-Branch (main) - erst nach
 #    dem Merge dieses Branches läuft der Cron automatisch.
 #  * GitHub deaktiviert geplante Workflows nach 60 Tagen ohne Repo-Aktivität.
-#  * Das Artefakt enthält fremde Discord-Nachrichten - es wird NICHT ins Repo
-#    committet, sondern nur als (privates) Artefakt gespeichert.
+#  * Das Artefakt enthält fremde Discord-Nachrichten. In diesem öffentlichen
+#    Repository darf deshalb niemals ein Klartext-Export hochgeladen werden.
 
 on:
   schedule:
@@ -77,43 +78,131 @@ jobs:
           else
             ARGS+=(--days "${IN_DAYS:-3}")
           fi
-          echo "Starte: python discord_math_crawl.py ${ARGS[*]}"
-          python discord_math_crawl.py "${ARGS[@]}"
+          mkdir -p discord_exports
+          if ! python discord_math_crawl.py "${ARGS[@]}" \
+            > discord_exports/crawl.log 2>&1; then
+            echo "::error::Discord-Crawl fehlgeschlagen; Details stehen nur im verschlüsselten Export."
+            exit 1
+          fi
 
       # Merge aller Kanal-JSONs -> MATH_MERGED.json, plus Link-/Ressourcen-CSV.
       # Läuft auch, wenn der Crawl teilweise fehlschlug, damit vorhandene Daten
       # trotzdem aufbereitet werden.
       - name: Merge + Ressourcen-CSV erzeugen
         if: always()
-        run: python extract_resources.py
+        run: |
+          mkdir -p discord_exports
+          if ! python extract_resources.py \
+            > discord_exports/extract-resources.log 2>&1; then
+            echo "::error::Ressourcen-Extraktion fehlgeschlagen; Details stehen nur im verschlüsselten Export."
+            exit 1
+          fi
 
       # Kerninhalt dieser vier Kanäle: diskutierte Gleichungen (LaTeX, vom TeXit-Bot
       # gerendert) statt Paper-Links -> math_discussions.json/.csv.
       - name: Diskutierte Probleme extrahieren
         if: always()
         env:
-          GUILD_ID: ${{ vars.DISCORD_GUILD_ID }}
+          # Server-IDs sind zwar keine Zugangsdaten, können den privaten
+          # Quellserver aber identifizieren und werden deshalb maskiert.
+          GUILD_ID: ${{ secrets.DISCORD_GUILD_ID }}
         run: |
           set -euo pipefail
           ARGS=()
           if [ -n "${GUILD_ID:-}" ]; then ARGS+=(--guild-id "$GUILD_ID"); fi
-          python extract_discussions.py "${ARGS[@]}"
+          if ! python extract_discussions.py "${ARGS[@]}" \
+            > discord_exports/extract-discussions.log 2>&1; then
+            echo "::error::Diskussions-Extraktion fehlgeschlagen; Details stehen nur im verschlüsselten Export."
+            exit 1
+          fi
 
-      # Aus jedem extrahierten Problem ein Agentic-Researcher-Projekt bauen.
-      - name: Research-Projekte erzeugen
+      # Signed CDN-Links laufen ab. Deshalb werden ausschließlich allow-gelistete
+      # Discord-Bildanhänge sofort als opaque lokale Dateien materialisiert.
+      - name: Bildanhänge für die Triage materialisieren
         if: always()
-        run: python make_research_projects.py --out-dir discord_exports/research_projects
+        run: |
+          set -euo pipefail
+          if [ ! -f discord_exports/ingest_bundle.json ]; then
+            echo "::warning::Kein ingest_bundle.json vorhanden; Medien-Schritt wird übersprungen."
+            exit 0
+          fi
+          if ! python materialize_media.py \
+            > discord_exports/materialize-media.log 2>&1; then
+            echo "::error::Medien-Materialisierung fehlgeschlagen; Details stehen nur im verschlüsselten Export."
+            exit 1
+          fi
+
+      # Das Framework ist die oberste Orchestrierungsschicht. Ein optionaler Ref
+      # erlaubt reproduzierbare Vertragsprüfungen gegen einen Tag oder Commit.
+      - name: Agentic Researcher auschecken
+        if: always()
+        uses: actions/checkout@v4
+        with:
+          repository: Erikiss/The-Agentic-Researcher
+          ref: ${{ vars.AGENTIC_RESEARCHER_REF || 'main' }}
+          path: _agentic_researcher
+          persist-credentials: false
+
+      - name: Übergabevertrag prüfen
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f discord_exports/ingest_bundle.json ]; then
+            echo "::warning::Kein ingest_bundle.json vorhanden; Vertragsprüfung wird übersprungen."
+            exit 0
+          fi
+          if ! python scripts/contract_smoke.py \
+              --agentic-researcher _agentic_researcher \
+              --bundle discord_exports/ingest_bundle.json \
+              --media-root discord_exports/curation_media \
+              > discord_exports/contract-smoke.log 2>&1; then
+            echo "::error::Übergabevertrag fehlgeschlagen; Details stehen nur im verschlüsselten Export."
+            exit 1
+          fi
+          git -C _agentic_researcher rev-parse HEAD \
+            > discord_exports/AGENTIC_RESEARCHER_COMMIT.txt
 
       - name: Datum für Artefaktnamen
         id: meta
         if: always()
         run: echo "date=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
 
-      - name: Export als Artefakt hochladen
+      - name: Export vor dem Upload verschlüsseln
+        id: encrypt
         if: always()
+        env:
+          AGE_RECIPIENT: ${{ vars.DISCORD_EXPORT_AGE_RECIPIENT }}
+        run: |
+          set -euo pipefail
+          if [ ! -d discord_exports ] || [ -z "$(find discord_exports -type f -print -quit)" ]; then
+            echo "::warning::Keine Exportdateien vorhanden."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "${AGE_RECIPIENT:-}" ]; then
+            echo "::error::Repository-Variable DISCORD_EXPORT_AGE_RECIPIENT fehlt; Klartext-Export wird nicht hochgeladen."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          sudo apt-get update
+          sudo apt-get install --yes age
+          if ! (
+            tar -czf - discord_exports \
+              | age --recipient "$AGE_RECIPIENT" \
+                  --output discord-math-export.tar.gz.age
+          ) 2> encryption-error.log; then
+            echo "::error::Export-Verschlüsselung fehlgeschlagen; es wird kein Artefakt hochgeladen."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          rm -f encryption-error.log
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Verschlüsselten Export als Artefakt hochladen
+        if: always() && steps.encrypt.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: discord-math-export-${{ steps.meta.outputs.date }}
-          path: discord_exports/
-          retention-days: 90
-          if-no-files-found: warn
+          path: discord-math-export.tar.gz.age
+          retention-days: 30
+          if-no-files-found: error
