@@ -64,6 +64,62 @@ python discord_math_crawl.py --days 7 --max 2000 --out my_exports
 Die Nachrichten landen als eine JSON-Datei pro Kanal unter
 `discord_exports/Mathematics/<kanal>.json`.
 
+### Diskutierte Probleme extrahieren und recherchieren lassen
+
+In diesen vier Kanälen werden **keine Paper verlinkt** — dort werden *Gleichungen
+diskutiert*: Nutzer posten LaTeX, das der **TeXit**-Bot als Bild rendert. Genau
+das extrahiert `extract_discussions.py`, und `make_research_projects.py` macht
+daraus fertige Projekte für
+[The Agentic Researcher](https://github.com/ZIB-IOL/The-Agentic-Researcher).
+
+```bash
+# 1) Diskutierte Gleichungen/Probleme herausziehen
+python extract_discussions.py --guild-id <server-id>
+#    -> discord_exports/math_discussions.json + .csv
+
+# 2) Aus jedem Problem ein Research-Projekt bauen
+python make_research_projects.py \
+    --instructions-template /pfad/zu/The-Agentic-Researcher/INSTRUCTIONS.md
+#    -> research_projects/<NNN>-<kanal>-<slug>/
+
+# 3) Den Research-Agent darauf ansetzen
+agentic-researcher --yolo research_projects/001-calculus-.../
+```
+
+**Was extrahiert wird:** LaTeX in allen gängigen Formen (`$…$`, `$$…$$`, `\[…\]`,
+` ```math `), verknüpft mit dem TeXit-Render (über die Reply-Referenz), bewertet
+per Heuristik (Formelmenge, echte TeX-Mathebefehle, Frage-Signale, Reaktionen)
+und angereichert um den **Gesprächsverlauf** rundherum. Beträge wie „$20 and $30"
+werden dabei nicht als Mathematik missverstanden.
+
+**Was ein Projekt enthält:** `PROBLEM.md` (fixierte Problemstellung),
+`SECTION8.md` (vorausgefüllter Abschnitt 8 des Frameworks), `context.json`,
+`scripts/verify.py` (Verifikations-Gerüst) und mit `--instructions-template` ein
+komplettes `CLAUDE.md`. Damit entfällt die interaktive Runde von
+`/setup_research_plan` — der Agent kann sofort loslegen.
+
+> `research_projects/` steht in `.gitignore`: die Ordner enthalten Discord-Inhalte
+> und gehören nicht ins Repository.
+
+**Vollständiges Beispiel:** [`examples/demo-fresnel-integral/`](examples/demo-fresnel-integral/)
+zeigt eine komplett durchgeführte Recherche zur Gleichung aus `#calculus` —
+inklusive Herleitung, Forschungsprotokoll (`report.tex`) und laufender
+numerischer Verifikation. Ergebnis:
+$\int_{0}^{\pi/2}\sin(\cot^{2}x)\sec^{2}x\,dx=\sqrt{\pi/2}$.
+
+### Ressourcen-/Paper-CSV erzeugen (optional, lokal)
+
+`extract_resources.py` führt alle Kanal-JSONs zusammen und extrahiert
+Mathematik-/Paper-Links (arXiv, MathOverflow, projecteuclid, … plus
+Social-Links mit Signalwörtern) – genau wie die Merge-/Extraktions-Zellen im
+Notebook, aber ohne Colab/Drive und ohne pandas:
+
+```bash
+python extract_resources.py            # liest discord_exports/, schreibt
+                                       # discord_exports/MATH_MERGED.json
+                                       # und discord_exports/math_resources.csv
+```
+
 ### Optionen
 
 | Option           | Bedeutung                                             | Default            |
@@ -95,6 +151,53 @@ Die Nachrichten landen als eine JSON-Datei pro Kanal unter
    `<kanal>.INCOMPLETE.json` gespeichert und in der Zusammenfassung als
    „unvollständig" gewarnt – Teil-Daten werden nie stillschweigend als
    vollständig gemeldet.
+
+## Automatisch täglich per GitHub Actions
+
+Der Workflow [`.github/workflows/daily-crawl.yml`](.github/workflows/daily-crawl.yml)
+führt jeden Tag automatisch den Crawler **und** die Aufbereitung
+(`extract_resources.py`) aus und legt das Ergebnis als **privates
+Workflow-Artefakt** ab (es wird bewusst **nicht** ins Repo committet, da es
+fremde Discord-Nachrichten enthält). Das Artefakt enthält:
+
+- `Mathematics/<kanal>.json` – die Rohnachrichten pro Kanal,
+- `MATH_MERGED.json` – alle Kanäle zusammengeführt (mit Herkunfts-Tags),
+- `math_discussions.json` / `.csv` – die **diskutierten Gleichungen/Probleme**,
+- `research_projects/` – ein fertiges Agentic-Researcher-Projekt pro Problem,
+- `math_resources.csv` – zusätzlich gefundene Links (in diesen Kanälen selten).
+
+Optional: Setze die Repository-Variable `DISCORD_GUILD_ID` (Settings → Secrets
+and variables → Actions → *Variables*), damit die extrahierten Probleme
+klickbare Discord-Links enthalten.
+
+**Einrichtung (einmalig):**
+
+1. Token als Repository-Secret hinterlegen: Repo → **Settings** → **Secrets and
+   variables** → **Actions** → **New repository secret**
+   - Name: `DISCORD_TOKEN_Backupper123`
+   - Wert: `<dein Discord-Token>`
+2. Den Branch mit dem Workflow nach `main` mergen. **Wichtig:** Der Zeitplan
+   (`schedule`) feuert nur auf dem Standard-Branch – erst nach dem Merge läuft
+   der Cron automatisch.
+
+**Zeitplan & manueller Start:**
+
+- Läuft täglich um **03:17 UTC** (`cron: "17 3 * * *"`).
+- Manuell startbar über den Reiter **Actions** → *Daily Math Crawl* → **Run
+  workflow**; dort lassen sich `days`, `full` und `max_per_channel` pro Lauf
+  setzen.
+
+**Ergebnis abholen:** Im jeweiligen Actions-Lauf unter **Artifacts** die Datei
+`discord-math-export-<datum>` herunterladen (Aufbewahrung: 90 Tage).
+
+**Gut zu wissen:**
+
+- GitHub deaktiviert geplante Workflows nach **60 Tagen** ohne Repository-
+  Aktivität – dann im Actions-Tab einmal reaktivieren.
+- Der Token wird nur als Secret in die Umgebungsvariable geladen und **nie
+  ausgegeben**. Fehlt das Secret, bricht der Lauf mit klarer Meldung ab.
+- Ein täglicher Lauf mit `--days 3` überschneidet sich bewusst leicht, damit
+  keine Lücken entstehen. Jeder Lauf erzeugt einen eigenständigen Snapshot.
 
 ## Hinweis zu den Discord-Nutzungsbedingungen
 

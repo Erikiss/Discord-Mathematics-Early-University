@@ -1,0 +1,119 @@
+name: Daily Math Crawl
+
+# Läuft täglich per Zeitplan und lädt die vier Ziel-Kanäle als privates
+# Workflow-Artefakt hoch. Der Discord-Token kommt aus dem Repository-Secret
+# DISCORD_TOKEN_Backupper123 (Settings -> Secrets and variables -> Actions).
+#
+# WICHTIG:
+#  * Der 'schedule'-Trigger feuert nur auf dem Standard-Branch (main) - erst nach
+#    dem Merge dieses Branches läuft der Cron automatisch.
+#  * GitHub deaktiviert geplante Workflows nach 60 Tagen ohne Repo-Aktivität.
+#  * Das Artefakt enthält fremde Discord-Nachrichten - es wird NICHT ins Repo
+#    committet, sondern nur als (privates) Artefakt gespeichert.
+
+on:
+  schedule:
+    # 03:17 UTC täglich (bewusst versetzt, nicht auf die volle Stunde).
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Zeitfenster in Tagen (Standard: 3)"
+        required: false
+        default: "3"
+      full:
+        description: "Komplette Historie crawlen (ignoriert 'days')"
+        type: boolean
+        required: false
+        default: false
+      max_per_channel:
+        description: "Max. Nachrichten pro Kanal"
+        required: false
+        default: "5000"
+
+# Nur Lesezugriff nötig - wir committen nichts zurück.
+permissions:
+  contents: read
+
+# Keine überlappenden Läufe.
+concurrency:
+  group: daily-math-crawl
+  cancel-in-progress: false
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run crawler
+        env:
+          # Token aus dem Repo-Secret -> Umgebungsvariable, die das Skript liest.
+          DISCORD_TOKEN_Backupper123: ${{ secrets.DISCORD_TOKEN_Backupper123 }}
+          # Inputs bewusst über Env (nicht inline ${{ }}) gegen Shell-Injection.
+          IN_DAYS: ${{ inputs.days }}
+          IN_FULL: ${{ inputs.full }}
+          IN_MAX: ${{ inputs.max_per_channel }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DISCORD_TOKEN_Backupper123:-}" ]; then
+            echo "::error::Secret 'DISCORD_TOKEN_Backupper123' fehlt. Anlegen unter Repo Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          ARGS=(--max "${IN_MAX:-5000}")
+          if [ "${IN_FULL:-false}" = "true" ]; then
+            ARGS+=(--full)
+          else
+            ARGS+=(--days "${IN_DAYS:-3}")
+          fi
+          echo "Starte: python discord_math_crawl.py ${ARGS[*]}"
+          python discord_math_crawl.py "${ARGS[@]}"
+
+      # Merge aller Kanal-JSONs -> MATH_MERGED.json, plus Link-/Ressourcen-CSV.
+      # Läuft auch, wenn der Crawl teilweise fehlschlug, damit vorhandene Daten
+      # trotzdem aufbereitet werden.
+      - name: Merge + Ressourcen-CSV erzeugen
+        if: always()
+        run: python extract_resources.py
+
+      # Kerninhalt dieser vier Kanäle: diskutierte Gleichungen (LaTeX, vom TeXit-Bot
+      # gerendert) statt Paper-Links -> math_discussions.json/.csv.
+      - name: Diskutierte Probleme extrahieren
+        if: always()
+        env:
+          GUILD_ID: ${{ vars.DISCORD_GUILD_ID }}
+        run: |
+          set -euo pipefail
+          ARGS=()
+          if [ -n "${GUILD_ID:-}" ]; then ARGS+=(--guild-id "$GUILD_ID"); fi
+          python extract_discussions.py "${ARGS[@]}"
+
+      # Aus jedem extrahierten Problem ein Agentic-Researcher-Projekt bauen.
+      - name: Research-Projekte erzeugen
+        if: always()
+        run: python make_research_projects.py --out-dir discord_exports/research_projects
+
+      - name: Datum für Artefaktnamen
+        id: meta
+        if: always()
+        run: echo "date=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+
+      - name: Export als Artefakt hochladen
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: discord-math-export-${{ steps.meta.outputs.date }}
+          path: discord_exports/
+          retention-days: 90
+          if-no-files-found: warn
