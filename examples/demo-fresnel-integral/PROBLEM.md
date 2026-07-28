@@ -26,8 +26,9 @@ numerisch verifizieren.
 
 ## Was das Problem knifflig macht
 
-- $\sec^2 x \to \infty$ für $x \to \pi/2$, dort geht aber $\sin(\cot^2 x) \to 0$;
-  das Produkt bleibt beschränkt.
+- $\sec^2 x \to \infty$ für $x \to \pi/2$, dort geht aber $\sin(\cot^2 x) \to 0$.
+  Das Produkt ist **hebbar** und strebt gegen genau $1$ — dort liegt also gar
+  keine Singularität (numerisch bestätigt: $f(\pi/2-10^{-10}) = 1{,}0$).
 - Die eigentliche Schwierigkeit liegt bei $x \to 0$: dort ist $\cot^2 x \to \infty$,
   der Integrand **oszilliert unendlich schnell**. Naive Quadratur über
   $[0,\pi/2]$ konvergiert deshalb nicht — ein Verifikationsskript, das das

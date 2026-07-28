@@ -56,6 +56,22 @@ fixed-order quadrature silently under-resolves it. Recorded here because the
 failure mode is the interesting part: a verification script that ignores it
 reports confident nonsense.
 
+\section{Well-posedness}
+
+The integrand is bounded on $(0,\pi/2)$: since $|\sin\theta|\le\min(1,|\theta|)$,
+\[
+  \big|\sin(\cot^{2}x)\sec^{2}x\big|
+  \;\le\; \min\!\big(\sec^{2}x,\;\cot^{2}x\,\sec^{2}x\big)
+  \;=\; \min\!\big(\sec^{2}x,\;\csc^{2}x\big) \;\le\; 2 .
+\]
+At $x\to\pi/2$ the apparent blow-up of $\sec^{2}x$ cancels exactly against
+$\sin(\cot^{2}x)\to0$: the product extends continuously with value
+$\lim_{x\to\pi/2}\sin(\cot^{2}x)\sec^{2}x = 1$ (confirmed numerically:
+$f(\pi/2-10^{-10})=1.0$). The only irregular point is $x\to0^{+}$, where
+$\cot^{2}x\to\infty$ and the integrand oscillates infinitely fast while staying
+bounded --- a discontinuity of the second kind at a single point. The integral is
+therefore proper and absolutely convergent; no principal value is needed.
+
 \section{E001 --- Derivation}
 
 \begin{lemma}\label{lem:sub}
