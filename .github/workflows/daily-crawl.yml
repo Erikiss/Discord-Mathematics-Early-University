@@ -80,11 +80,20 @@ jobs:
           echo "Starte: python discord_math_crawl.py ${ARGS[*]}"
           python discord_math_crawl.py "${ARGS[@]}"
 
+      # Merge aller Kanal-JSONs + Ressourcen-/Paper-Extraktion -> MATH_MERGED.json
+      # und math_resources.csv (landen mit im Export-Ordner). Läuft auch, wenn der
+      # Crawl teilweise fehlschlug, damit vorhandene Daten trotzdem aufbereitet werden.
+      - name: Merge + Ressourcen-CSV erzeugen
+        if: always()
+        run: python extract_resources.py
+
       - name: Datum für Artefaktnamen
         id: meta
+        if: always()
         run: echo "date=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
 
       - name: Export als Artefakt hochladen
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: discord-math-export-${{ steps.meta.outputs.date }}

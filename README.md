@@ -64,6 +64,19 @@ python discord_math_crawl.py --days 7 --max 2000 --out my_exports
 Die Nachrichten landen als eine JSON-Datei pro Kanal unter
 `discord_exports/Mathematics/<kanal>.json`.
 
+### Ressourcen-/Paper-CSV erzeugen (optional, lokal)
+
+`extract_resources.py` führt alle Kanal-JSONs zusammen und extrahiert
+Mathematik-/Paper-Links (arXiv, MathOverflow, projecteuclid, … plus
+Social-Links mit Signalwörtern) – genau wie die Merge-/Extraktions-Zellen im
+Notebook, aber ohne Colab/Drive und ohne pandas:
+
+```bash
+python extract_resources.py            # liest discord_exports/, schreibt
+                                       # discord_exports/MATH_MERGED.json
+                                       # und discord_exports/math_resources.csv
+```
+
 ### Optionen
 
 | Option           | Bedeutung                                             | Default            |
@@ -99,9 +112,14 @@ Die Nachrichten landen als eine JSON-Datei pro Kanal unter
 ## Automatisch täglich per GitHub Actions
 
 Der Workflow [`.github/workflows/daily-crawl.yml`](.github/workflows/daily-crawl.yml)
-führt den Crawler jeden Tag automatisch aus und legt das Ergebnis als **privates
+führt jeden Tag automatisch den Crawler **und** die Aufbereitung
+(`extract_resources.py`) aus und legt das Ergebnis als **privates
 Workflow-Artefakt** ab (es wird bewusst **nicht** ins Repo committet, da es
-fremde Discord-Nachrichten enthält).
+fremde Discord-Nachrichten enthält). Das Artefakt enthält:
+
+- `Mathematics/<kanal>.json` – die Rohnachrichten pro Kanal,
+- `MATH_MERGED.json` – alle Kanäle zusammengeführt (mit Herkunfts-Tags),
+- `math_resources.csv` – die extrahierten Mathematik-/Paper-Links.
 
 **Einrichtung (einmalig):**
 
