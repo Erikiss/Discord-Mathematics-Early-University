@@ -15,13 +15,14 @@ Crawls hängen vom Nachrichtenaufkommen ab — dafür steht unten eine Formel.
 | 2 | Crawl der vier Kanäle | **~20 s bis ~5 min** | pro Lauf |
 | 3 | Merge + Ressourcen-CSV | **0,3 s** | pro Lauf |
 | 4 | Diskutierte Gleichungen extrahieren | **0,5 s** | pro Lauf |
-| 5 | Research-Projekte erzeugen | **0,9 s** | pro Lauf |
-| 6 | **Research-Agent pro Problem** | **~5–9 min** | pro Problem |
-| 7 | Verifikation nachrechnen | **1,6 s** | pro Problem |
+| 5 | Ingest-Bundle + Bilder vorbereiten | lokal, abhängig von Anhängen | pro Lauf |
+| 6 | Drei-Agenten-Kuration + 2-von-3-Konsens | abhängig von den Agenten | pro Bundle |
+| 7 | Open-Weight-Research-Batch | abhängig von Queue und Modell | pro Batch |
 
-Die Schritte 3–5 zusammen brauchen bei 25 000 Nachrichten **1,65 s** — die
-Aufbereitung ist also vernachlässigbar. Zeit kostet nur der Crawl (durch die
-Discord-Ruhezeiten) und der Research-Agent.
+Die früher gemessenen Legacy-Schritte 3–5 brauchten bei 25 000 Nachrichten
+**1,65 s**. Für den neuen Vertrags-, Bild- und Konsenspfad liegen noch keine
+belastbaren End-to-End-Messwerte vor; Bilddownloads und drei externe Agenten
+hängen von Datenmenge, Netzwerk und Anmeldung ab.
 
 ---
 
@@ -74,55 +75,60 @@ Gemessene Stützpunkte:
 > werden. Das ist kein Fehler, sondern die eingebaute API-Schonung — nicht
 > herunterdrehen.
 
-## Schritte 3–5 — Aufbereitung · gemessen: 1,65 s bei 25 000 Nachrichten
+## Schritte 3–5 — Aufbereitung und Übergabevertrag
 
 ```bash
 python extract_resources.py                       # Merge + Links
 python extract_discussions.py --guild-id <id>     # diskutierte Gleichungen
-python make_research_projects.py \
-    --instructions-template /pfad/zu/The-Agentic-Researcher/INSTRUCTIONS.md
+python materialize_media.py                        # lokale Bilder + Manifest
 ```
+
+`extract_discussions.py` schreibt neben den Legacy-Dateien jetzt
+`discord_exports/ingest_bundle.json`. Es enthält atomare, pseudonymisierte
+Nachrichten und deterministische Themenblöcke; die private Projektion ermöglicht
+lokale Rückverfolgung und darf nicht veröffentlicht werden.
+
+Die historischen Messwerte des weiterhin verfügbaren Legacy-Generators:
 
 | Nachrichten | `extract_resources` | `extract_discussions` | `make_research_projects` | Summe |
 | --- | --- | --- | --- | --- |
 | 5 000 | 0,06 s | 0,08 s | 0,23 s (281 Projekte) | **0,37 s** |
 | 25 000 | 0,32 s | 0,47 s | 0,86 s (1 500 Projekte) | **1,65 s** |
 
-### ⚠️ Wichtig: die Projektzahl explodiert
+### Wichtig: erst kuratieren, dann expandieren
 
-25 000 Nachrichten ergaben im Test **1 500 Projekte** (26 MB). Das Erzeugen
-dauert zwar nur eine Sekunde — sie *durchrechnen* zu lassen wären bei ~5 min pro
-Problem rund **125 Agent-Stunden**. Deshalb vorher filtern:
-
-```bash
-# nur die 10 gehaltvollsten Probleme
-python make_research_projects.py --limit 10
-
-# oder strenger schwellen (Standard: 8)
-python extract_discussions.py --min-score 20
-```
-
-Erst die Liste ansehen (`math_discussions.csv`, nach Score sortiert), dann
-entscheiden, was tatsächlich recherchiert wird.
-
-## Schritt 6 — Research-Agent · gemessen: 5–9 min pro Problem
+25 000 Nachrichten ergaben im Legacy-Test **1 500 Projekte** (26 MB). Genau
+diese Explosion verhindert der neue Standardpfad: Claude Code, OpenAI Codex und
+Google Antigravity interpretieren unabhängig nur die Themenblöcke; kritische
+Felder werden erst mit 2-von-3-Konsens übernommen.
 
 ```bash
-agentic-researcher --yolo research_projects/001-calculus-.../
+cd /pfad/zu/The-Agentic-Researcher
+python -m agentic_researcher curate \
+  /pfad/zum/Discord-Repo/discord_exports/ingest_bundle.json \
+  --provider claude --provider codex --provider antigravity \
+  --media-root /pfad/zum/Discord-Repo/discord_exports/curation_media \
+  --output curated_topics.json
+python -m agentic_researcher expand curated_topics.json \
+  --output research_queue.json
 ```
 
-Gemessen an realen Agent-Läufen dieser Session:
+Bei Formel- oder Themenkonflikten lautet der Status `needs_review`; solche
+Blöcke werden standardmäßig nicht automatisch expandiert.
 
-| Agent-Typ | Median | Maximum |
-| --- | --- | --- |
-| Mathematik-Recherche (Herleitung + numerische Verifikation) | **5,4 min** | 8,5 min |
-| Code-Review / kürzere Analyse | 1,8 min | 3,6 min |
+## Schritt 6 — günstiger High-Volume-Research-Batch
 
-Ein Bündel von 17 parallel laufenden Agenten brauchte **16 min Wanduhr** bei
-30,6 Agent-Minuten Rechenzeit — parallelisieren lohnt sich also deutlich.
+```bash
+python -m agentic_researcher run-batch research_queue.json \
+  --work-root research_runs \
+  --state batch-state.json \
+  --provider opencode
+```
 
-**Faustregel:** rechne **~6 min pro Problem** und teile durch deine Parallelität.
-10 Probleme sequenziell ≈ 1 Stunde; 10 Probleme parallel ≈ 10–15 min.
+Der Batch ist idempotent und resumierbar. OpenCode zeigt dabei auf einen lokalen
+OpenAI-kompatiblen Modellserver. Für Colab/A100 liegt im Agentic-Researcher-Repo
+`notebooks/open_weight_bulk_research.ipynb`: unter etwa 75 GiB GPU-Speicher
+startet es `gpt-oss-20b`, darüber `gpt-oss-120b`.
 
 ### Container-Build (einmalig) — hier nicht messbar
 
@@ -152,15 +158,38 @@ export DISCORD_TOKEN_Backupper123="..."              #  manuell
 python discord_math_crawl.py                         # ~20   s
 python extract_resources.py                          #   0,1 s
 python extract_discussions.py                        #   0,1 s
-python make_research_projects.py --limit 5           #   0,1 s
+python materialize_media.py                          # abhängig von Anhängen
 ```
 
-**Bis hierher: unter einer Minute** (plus Token-Eingabe). Danach entscheidet nur
-noch, wie viele Probleme du recherchieren lässt — **~6 min pro Stück**.
+Danach das private Artefakt mit den drei kommerziellen Systemen kuratieren,
+expandieren und die resultierende Queue lokal oder in Colab ausführen.
 
 ## Automatisch statt manuell
 
-Der Workflow [`daily-crawl.yml`](.github/workflows/daily-crawl.yml) erledigt die
-Schritte 2–5 täglich um 03:17 UTC von selbst; das Ergebnis liegt als Artefakt
-bereit. Typische Gesamtlaufzeit des Jobs: **Checkout + Setup ~30 s, Crawl je
-nach Aufkommen, Aufbereitung ~2 s** — das Job-Timeout steht auf 30 min.
+Der Workflow [`daily-crawl.yml`](.github/workflows/daily-crawl.yml) erledigt
+Crawl, Bundle- und Bildaufbereitung täglich um 03:17 UTC. Er prüft den Vertrag
+gegen einen Checkout von Erikiss/The-Agentic-Researcher und speichert dessen
+Commit im Export. Weil das Repository öffentlich ist, wird dieser Export vor
+dem Upload mit `age` verschlüsselt; normale Actions-Artefakte sind hier nicht
+privat.
+
+Einmalig lokal ein Schlüsselpaar erzeugen und nur den ausgegebenen öffentlichen
+Empfänger (`age1...`) als Repository-Variable
+`DISCORD_EXPORT_AGE_RECIPIENT` hinterlegen:
+
+```bash
+age-keygen --output /sicherer/pfad/discord-export-key.txt
+```
+
+Der private Schlüssel bleibt außerhalb des Repositories. Ohne die Variable
+lädt der Workflow absichtlich keinen Klartext-Export hoch. Nach dem Download:
+
+```bash
+age --decrypt --identity /sicherer/pfad/discord-export-key.txt \
+  --output discord-math-export.tar.gz \
+  discord-math-export.tar.gz.age
+tar -xzf discord-math-export.tar.gz
+```
+
+Die drei kommerziellen Agenten laufen anschließend lokal mit den Zugangsdaten
+des Besitzers.

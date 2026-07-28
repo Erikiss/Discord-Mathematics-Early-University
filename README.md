@@ -67,42 +67,83 @@ python discord_math_crawl.py --days 7 --max 2000 --out my_exports
 Die Nachrichten landen als eine JSON-Datei pro Kanal unter
 `discord_exports/Mathematics/<kanal>.json`.
 
-### Diskutierte Probleme extrahieren und recherchieren lassen
+### Discord aufbereiten und an The Agentic Researcher übergeben
 
-In diesen vier Kanälen werden **keine Paper verlinkt** — dort werden *Gleichungen
-diskutiert*: Nutzer posten LaTeX, das der **TeXit**-Bot als Bild rendert. Genau
-das extrahiert `extract_discussions.py`, und `make_research_projects.py` macht
-daraus fertige Projekte für
-[The Agentic Researcher](https://github.com/ZIB-IOL/The-Agentic-Researcher).
+Dieses Repository ist der **Discord-Adapter**. Die oberste Orchestrierung,
+Konsensbildung und eigentliche Recherche liegen im Fork
+[Erikiss/The-Agentic-Researcher](https://github.com/Erikiss/The-Agentic-Researcher).
+So bleibt die teure, fachlich anspruchsvolle Interpretation klein, während die
+vielen nachgelagerten Rechercheaufträge mit einem lokalen Open-Weight-Modell
+laufen können.
 
-```bash
-# 1) Diskutierte Gleichungen/Probleme herausziehen
-python extract_discussions.py --guild-id <server-id>
-#    -> discord_exports/math_discussions.json + .csv
-
-# 2) Aus jedem Problem ein Research-Projekt bauen
-python make_research_projects.py \
-    --instructions-template /pfad/zu/The-Agentic-Researcher/INSTRUCTIONS.md
-#    -> research_projects/<NNN>-<kanal>-<slug>/
-
-# 3) Den Research-Agent darauf ansetzen
-agentic-researcher --yolo research_projects/001-calculus-.../
+```text
+vier Discord-Kanäle
+  → ingest_bundle.json + lokale Bilder
+  → Claude Code │ OpenAI Codex │ Google Antigravity
+  → 2-von-3-Konsens
+  → synthetische Research-Queue
+  → Agentic Researcher + lokales Open-Weight-Modell
 ```
 
-**Was extrahiert wird:** LaTeX in allen gängigen Formen (`$…$`, `$$…$$`, `\[…\]`,
-` ```math `), verknüpft mit dem TeXit-Render (über die Reply-Referenz), bewertet
-per Heuristik (Formelmenge, echte TeX-Mathebefehle, Frage-Signale, Reaktionen)
-und angereichert um den **Gesprächsverlauf** rundherum. Beträge wie „$20 and $30"
-werden dabei nicht als Mathematik missverstanden.
+Zuerst werden Gleichungen, Gesprächskontext und Anhänge neutral aufbereitet:
 
-**Was ein Projekt enthält:** `PROBLEM.md` (fixierte Problemstellung),
-`SECTION8.md` (vorausgefüllter Abschnitt 8 des Frameworks), `context.json`,
-`scripts/verify.py` (Verifikations-Gerüst) und mit `--instructions-template` ein
-komplettes `CLAUDE.md`. Damit entfällt die interaktive Runde von
-`/setup_research_plan` — der Agent kann sofort loslegen.
+```bash
+python extract_discussions.py --guild-id <server-id>
+# -> discord_exports/math_discussions.json + .csv
+# -> discord_exports/ingest_bundle.json
 
-> `research_projects/` steht in `.gitignore`: die Ordner enthalten Discord-Inhalte
-> und gehören nicht ins Repository.
+# Optional, aber für visuelle Beiträge empfohlen: nur allow-gelistete
+# Discord-Bild-URLs, mit Größen- und Typgrenzen, lokal materialisieren.
+python materialize_media.py
+# -> discord_exports/curation_media/
+```
+
+`ingest_bundle.json` enthält atomare Nachrichten und deterministische
+Themenblöcke mit stabilen IDs, LaTeX, Reply-/Zeitkontext und TeXit-Zuordnung.
+Die `public`-Projektion pseudonymisiert Teilnehmer und entfernt Discord-Links;
+die `private`-Projektion hält die Rückverfolgbarkeit für den Besitzer. Das
+gesamte Bundle und `curation_media/` bleiben deshalb **private**. Verdächtige
+Prompt-Texte werden nicht entfernt, sondern ausdrücklich als nicht vertrauenswürdige
+Daten markiert.
+
+Danach wird im Agentic-Researcher-Checkout kuratiert und expandiert:
+
+```bash
+cd /pfad/zu/The-Agentic-Researcher
+
+python -m agentic_researcher curate \
+  /pfad/zu/Discord-Mathematics-Early-University/discord_exports/ingest_bundle.json \
+  --provider claude \
+  --provider codex \
+  --provider antigravity \
+  --media-root /pfad/zu/Discord-Mathematics-Early-University/discord_exports/curation_media \
+  --output curated_topics.json
+
+python -m agentic_researcher expand curated_topics.json \
+  --output research_queue.json
+```
+
+Die drei kommerziellen Systeme arbeiten unabhängig. Erst Übereinstimmung von
+mindestens zwei Systemen übernimmt kritische Felder wie Themenzuordnung und
+Formeln; Konflikte landen als `needs_review`. Der anschließende resumierbare
+Batch benutzt standardmäßig OpenCode als Adapter für ein lokales Modell. Das
+Agentic-Researcher-Repo enthält dafür auch ein Colab/A100-Notebook mit
+`gpt-oss-20b` beziehungsweise, bei genügend GPU-Speicher, `gpt-oss-120b`.
+Alle drei gültigen Antworten sind standardmäßig Pflicht; ein degradierter
+Zwei-System-Lauf muss ausdrücklich aktiviert und manuell geprüft werden.
+
+Die Recherche kann Bücher, Code,
+[die arXiv-Mathematik-Karte](https://lmcinnes.github.io/datamapplot_examples/arXiv_math/),
+OpenAlex, Erdős Problems, OEIS und das Journal of Integer Sequences einbeziehen.
+Die Karte basiert auf `nomic-embed`/Sentence Transformers und t-SNE; Model2Vec
+war nur ein späterer Diskussionsvorschlag. Ihre 2D-Distanz und scheinbare Dichte
+dienen nur zur Entdeckung, nicht als Rankingmetrik. Offene Erdős-Probleme werden
+ausschließlich als Ausblick behandelt; gelöste, bewiesene oder widerlegte
+Probleme können als Lernbeispiele vorgeschlagen werden.
+
+`make_research_projects.py` bleibt als **Legacy-Direktweg** verfügbar. Der
+Standardworkflow nutzt ihn nicht mehr, weil er ohne unabhängige Kuration aus
+jeder Heuristik direkt ein Projekt erzeugt.
 
 **Vollständiges Beispiel:** [`examples/demo-fresnel-integral/`](examples/demo-fresnel-integral/)
 zeigt eine komplett durchgeführte Recherche zur Gleichung aus `#calculus` —
@@ -159,19 +200,47 @@ python extract_resources.py            # liest discord_exports/, schreibt
 
 Der Workflow [`.github/workflows/daily-crawl.yml`](.github/workflows/daily-crawl.yml)
 führt jeden Tag automatisch den Crawler **und** die Aufbereitung
-(`extract_resources.py`) aus und legt das Ergebnis als **privates
-Workflow-Artefakt** ab (es wird bewusst **nicht** ins Repo committet, da es
-fremde Discord-Nachrichten enthält). Das Artefakt enthält:
+(`extract_resources.py`) aus und legt das Ergebnis als **clientseitig
+verschlüsseltes Workflow-Artefakt** ab (es wird bewusst **nicht** ins Repo
+committet, da es fremde Discord-Nachrichten enthält). Der verschlüsselte Export
+enthält:
 
 - `Mathematics/<kanal>.json` – die Rohnachrichten pro Kanal,
 - `MATH_MERGED.json` – alle Kanäle zusammengeführt (mit Herkunfts-Tags),
 - `math_discussions.json` / `.csv` – die **diskutierten Gleichungen/Probleme**,
-- `research_projects/` – ein fertiges Agentic-Researcher-Projekt pro Problem,
+- `ingest_bundle.json` – validierter, versionsgebundener Übergabevertrag,
+- `curation_media/` – lokal materialisierte Bilder plus URL-freies Manifest,
+- `AGENTIC_RESEARCHER_COMMIT.txt` – getesteter Framework-Commit,
 - `math_resources.csv` – zusätzlich gefundene Links (in diesen Kanälen selten).
 
-Optional: Setze die Repository-Variable `DISCORD_GUILD_ID` (Settings → Secrets
-and variables → Actions → *Variables*), damit die extrahierten Probleme
-klickbare Discord-Links enthalten.
+Der Job checkt The Agentic Researcher nur zur Vertragsprüfung aus. Claude Code,
+Codex und Antigravity werden **nicht** im GitHub-Runner aufgerufen. Da dieses
+Repository öffentlich ist, sind normale Actions-Artefakte nicht privat: Der
+Workflow lädt deshalb ausschließlich ein mit
+[age](https://age-encryption.org/) clientseitig verschlüsseltes
+`discord-math-export.tar.gz.age` hoch. Hinterlege zuvor den öffentlichen
+Empfänger (`age1...`) als Repository-Variable
+`DISCORD_EXPORT_AGE_RECIPIENT`; der private Schlüssel bleibt ausschließlich
+lokal. Ohne die Variable schlägt der Upload geschlossen fehl und es werden
+keine Klartextdaten veröffentlicht.
+
+Nach dem Download:
+
+```bash
+age --decrypt --identity /sicherer/pfad/discord-export-key.txt \
+  --output discord-math-export.tar.gz \
+  discord-math-export.tar.gz.age
+tar -xzf discord-math-export.tar.gz
+```
+
+Danach wird die Kuration lokal mit den eigenen Anmeldedaten gestartet. Mit der
+optionalen Repository-Variable `AGENTIC_RESEARCHER_REF` lässt sich die
+Vertragsprüfung auf einen Tag oder Commit pinnen.
+
+Optional: Setze das Repository-Secret `DISCORD_GUILD_ID` (Settings → Secrets
+and variables → Actions → *Secrets*), damit die private Projektion klickbare
+Discord-Links enthält, ohne die Server-ID in öffentlichen Runner-Metadaten
+offenzulegen.
 
 **Einrichtung (einmalig):**
 
@@ -179,7 +248,11 @@ klickbare Discord-Links enthalten.
    variables** → **Actions** → **New repository secret**
    - Name: `DISCORD_TOKEN_Backupper123`
    - Wert: `<dein Discord-Token>`
-2. Den Branch mit dem Workflow nach `main` mergen. **Wichtig:** Der Zeitplan
+2. Mit `age-keygen --output /sicherer/pfad/discord-export-key.txt` lokal ein
+   Schlüsselpaar erzeugen. Den privaten Schlüssel niemals hochladen.
+3. Den von `age-keygen` ausgegebenen öffentlichen Empfänger (`age1...`) unter
+   **Actions → Variables** als `DISCORD_EXPORT_AGE_RECIPIENT` hinterlegen.
+4. Den Branch mit dem Workflow nach `main` mergen. **Wichtig:** Der Zeitplan
    (`schedule`) feuert nur auf dem Standard-Branch – erst nach dem Merge läuft
    der Cron automatisch.
 
@@ -191,7 +264,7 @@ klickbare Discord-Links enthalten.
   setzen.
 
 **Ergebnis abholen:** Im jeweiligen Actions-Lauf unter **Artifacts** die Datei
-`discord-math-export-<datum>` herunterladen (Aufbewahrung: 90 Tage).
+`discord-math-export-<datum>` herunterladen (Aufbewahrung: 30 Tage).
 
 **Gut zu wissen:**
 

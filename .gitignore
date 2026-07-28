@@ -8,6 +8,9 @@ venv/
 # Crawl output (never commit scraped Discord data)
 discord_exports/
 *.json.bak
+discord-math-export.tar.gz
+discord-math-export.tar.gz.age
+discord-export-key.txt
 
 # OS / editor
 .DS_Store
