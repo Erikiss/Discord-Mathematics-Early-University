@@ -17,6 +17,9 @@ Anfragen, dann `Server → Kanäle → Nachrichten` als JSON. Getauscht wurden n
 Server und Kanäle – und die Kanalliste ist auf die vier oben beschränkt, weil
 der Mathematics-Server sehr viele Kanäle hat.
 
+> **Schnelleinstieg mit Zeitangaben:** [QUICKSTART.md](QUICKSTART.md) — was wie
+> lange dauert, vom Setup bis zum Research-Agent (alle Zeiten gemessen).
+
 ## Zwei Varianten
 
 - **`notebooks/discord_math_crawl.ipynb`** – Google-Colab-Notebook, das den
