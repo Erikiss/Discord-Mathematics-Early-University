@@ -12,3 +12,6 @@ discord_exports/
 # OS / editor
 .DS_Store
 .ipynb_checkpoints/
+
+# Generierte Research-Projekte (enthalten Discord-Inhalte)
+research_projects/

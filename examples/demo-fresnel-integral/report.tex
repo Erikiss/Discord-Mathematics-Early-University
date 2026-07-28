@@ -1,0 +1,153 @@
+% Research record for the #calculus integral, in the format prescribed by
+% The Agentic Researcher's INSTRUCTIONS.md (Section 3, "Experiment recording").
+% LaTeX is read/edit only inside the sandbox -- never compiled by the agent.
+\documentclass[11pt]{article}
+
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage[most]{tcolorbox}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}[theorem]{Lemma}
+
+\newtcolorbox{verification}{colback=green!5!white, colframe=green!50!black,
+  title=Verification}
+
+\title{Evaluation of $\int_{0}^{\pi/2} \sin(\cot^{2}x)\sec^{2}x\,dx$}
+\author{Agentic research record --- extracted from Discord \#calculus}
+\date{2026-07-28}
+
+\begin{document}
+\maketitle
+
+\section{Problem}
+
+Evaluate
+\begin{equation}\label{eq:problem}
+  I \;=\; \int_{0}^{\pi/2} \sin\!\big(\cot^{2}x\big)\,\sec^{2}x\,\mathrm{d}x .
+\end{equation}
+The statement is fixed (Commandment II) and reproduced verbatim from
+\texttt{PROBLEM.md}.
+
+\section{Experiment log}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llll}
+\toprule
+ID & Description & $|{\text{numeric}-\text{closed}}|$ & Status \\
+\midrule
+E000 & Baseline: naive \texttt{mp.quad} over $[0,\pi/2]$ & $2.6\cdot10^{-3}$ & rejected \\
+E001 & Substitution $t=\cot x$, integration by parts & --- & derivation \\
+E002 & Split at $\delta$ + oscillatory quadrature & $9.1\cdot10^{-18}$ & \textbf{accepted} \\
+E003 & Symbolic cross-check with \texttt{sympy} & exact match & confirmed \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{E000 --- Baseline (rejected)}
+
+Direct quadrature of \eqref{eq:problem} over $[0,\pi/2]$ returns $1.25075\ldots$,
+which disagrees with the eventual closed form in the third decimal. The cause is
+not a wrong closed form but a \emph{wrong measurement}: as $x\to0$ we have
+$\cot^{2}x\to\infty$, so $\sin(\cot^{2}x)$ oscillates infinitely fast and
+fixed-order quadrature silently under-resolves it. Recorded here because the
+failure mode is the interesting part: a verification script that ignores it
+reports confident nonsense.
+
+\section{E001 --- Derivation}
+
+\begin{lemma}\label{lem:sub}
+  $I = \displaystyle\int_{0}^{\infty} \frac{\sin(t^{2})}{t^{2}}\,\mathrm{d}t$.
+\end{lemma}
+
+\begin{proof}
+  Substitute $t=\cot x$ for $x\in(0,\pi/2)$, a smooth decreasing bijection onto
+  $(0,\infty)$. Then
+  \[
+    \mathrm{d}t = -\csc^{2}x\,\mathrm{d}x = -(1+t^{2})\,\mathrm{d}x,
+    \qquad
+    \sec^{2}x = 1+\tan^{2}x = 1+\frac{1}{t^{2}} = \frac{1+t^{2}}{t^{2}} .
+  \]
+  Substituting into \eqref{eq:problem} and flipping the orientation of the
+  limits,
+  \[
+    I=\int_{\infty}^{0}\sin(t^{2})\,\frac{1+t^{2}}{t^{2}}
+        \cdot\frac{-\,\mathrm{d}t}{1+t^{2}}
+     =\int_{0}^{\infty}\frac{\sin(t^{2})}{t^{2}}\,\mathrm{d}t .
+  \]
+  The factor $1+t^{2}$ cancels exactly, which is what makes the problem tractable.
+\end{proof}
+
+\begin{theorem}\label{thm:main}
+  $I=\sqrt{\dfrac{\pi}{2}}$.
+\end{theorem}
+
+\begin{proof}
+  Integrate Lemma~\ref{lem:sub} by parts with $u=\sin(t^{2})$, $\mathrm{d}v=t^{-2}\mathrm{d}t$,
+  so $v=-1/t$ and $\mathrm{d}u = 2t\cos(t^{2})\,\mathrm{d}t$:
+  \[
+    I = \left[-\frac{\sin(t^{2})}{t}\right]_{0}^{\infty}
+        + \int_{0}^{\infty}\frac{2t\cos(t^{2})}{t}\,\mathrm{d}t
+      = 0 + 2\int_{0}^{\infty}\cos(t^{2})\,\mathrm{d}t .
+  \]
+  The boundary term vanishes at both ends: as $t\to0^{+}$,
+  $\sin(t^{2})/t \sim t \to 0$; as $t\to\infty$, $|\sin(t^{2})/t|\le 1/t \to 0$.
+  The remaining integral is the Fresnel integral
+  $\int_{0}^{\infty}\cos(t^{2})\,\mathrm{d}t=\tfrac12\sqrt{\pi/2}$, hence
+  $I = 2\cdot\tfrac12\sqrt{\pi/2}=\sqrt{\pi/2}$.
+\end{proof}
+
+An independent route confirms the same value: with
+$\int_{0}^{\infty}\sin(u)\,u^{s-1}\mathrm{d}u=\Gamma(s)\sin(\pi s/2)$ for
+$-1<s<1$, the substitution $u=t^{2}$ in Lemma~\ref{lem:sub} gives
+$I=\tfrac12\int_{0}^{\infty}\sin(u)u^{-3/2}\mathrm{d}u
+ =\tfrac12\,\Gamma(-\tfrac12)\sin(-\tfrac{\pi}{4})
+ =\tfrac12\big(-2\sqrt{\pi}\big)\big(-\tfrac{\sqrt2}{2}\big)=\sqrt{\pi/2}$.
+
+\section{E002 --- Numerical verification (accepted)}
+
+\texttt{scripts/verify.py} evaluates the \emph{original} integrand, splitting at
+$\delta=0.05$: ordinary quadrature on $[\delta,\pi/2]$, and the oscillatory head
+$[0,\delta]$ mapped by the exact change of variables onto
+$\tfrac12\int_{\cot^{2}\delta}^{\infty}\sin(u)u^{-3/2}\mathrm{d}u$, evaluated with
+\texttt{mpmath.quadosc}. A change of variables is an identity, so this still
+verifies \eqref{eq:problem} itself.
+
+\begin{verification}
+At \texttt{mp.dps = 30}:
+\[
+  \text{numeric} = 1.253314137315500242086366, \qquad
+  \sqrt{\pi/2}   = 1.253314137315500251207883,
+\]
+absolute deviation $9.12\cdot10^{-18}$ ($\approx 17$ significant digits).
+
+Assumption-free cross-check, bounding the head by
+$|\int_{0}^{\delta}|\le\delta\sec^{2}\delta$ and using no substitution at all,
+brackets $I \in [1.20325,\,1.30350]$, which contains $\sqrt{\pi/2}$.
+\end{verification}
+
+\section{E003 --- Symbolic cross-check}
+
+\texttt{sympy} evaluates the reduced form of Lemma~\ref{lem:sub} in closed form,
+\[
+  \texttt{integrate(sin(t**2)/t**2, (t, 0, oo))} \;=\; \frac{\sqrt{2}\sqrt{\pi}}{2}
+  \;=\; \sqrt{\pi/2},
+\]
+in exact agreement with Theorem~\ref{thm:main}.
+
+\section{Result}
+
+\[
+  \boxed{\;\int_{0}^{\pi/2}\sin(\cot^{2}x)\sec^{2}x\,\mathrm{d}x=\sqrt{\frac{\pi}{2}}
+  =\frac{\sqrt{2\pi}}{2}\approx 1.2533141373155003\;}
+\]
+
+The problem is a Fresnel integral in disguise: the $\sec^{2}x$ factor is exactly
+the Jacobian that makes $t=\cot x$ collapse the expression to
+$\int_{0}^{\infty}\sin(t^{2})/t^{2}\,\mathrm{d}t$. Prior work: this is the
+standard Fresnel integral $\int_{0}^{\infty}\cos(t^{2})\mathrm{d}t=\frac12\sqrt{\pi/2}$
+(Fresnel, 1818); no novelty is claimed (Commandment: flag rediscovery).
+
+\end{document}

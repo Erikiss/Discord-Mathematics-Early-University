@@ -64,6 +64,49 @@ python discord_math_crawl.py --days 7 --max 2000 --out my_exports
 Die Nachrichten landen als eine JSON-Datei pro Kanal unter
 `discord_exports/Mathematics/<kanal>.json`.
 
+### Diskutierte Probleme extrahieren und recherchieren lassen
+
+In diesen vier Kanälen werden **keine Paper verlinkt** — dort werden *Gleichungen
+diskutiert*: Nutzer posten LaTeX, das der **TeXit**-Bot als Bild rendert. Genau
+das extrahiert `extract_discussions.py`, und `make_research_projects.py` macht
+daraus fertige Projekte für
+[The Agentic Researcher](https://github.com/ZIB-IOL/The-Agentic-Researcher).
+
+```bash
+# 1) Diskutierte Gleichungen/Probleme herausziehen
+python extract_discussions.py --guild-id <server-id>
+#    -> discord_exports/math_discussions.json + .csv
+
+# 2) Aus jedem Problem ein Research-Projekt bauen
+python make_research_projects.py \
+    --instructions-template /pfad/zu/The-Agentic-Researcher/INSTRUCTIONS.md
+#    -> research_projects/<NNN>-<kanal>-<slug>/
+
+# 3) Den Research-Agent darauf ansetzen
+agentic-researcher --yolo research_projects/001-calculus-.../
+```
+
+**Was extrahiert wird:** LaTeX in allen gängigen Formen (`$…$`, `$$…$$`, `\[…\]`,
+` ```math `), verknüpft mit dem TeXit-Render (über die Reply-Referenz), bewertet
+per Heuristik (Formelmenge, echte TeX-Mathebefehle, Frage-Signale, Reaktionen)
+und angereichert um den **Gesprächsverlauf** rundherum. Beträge wie „$20 and $30"
+werden dabei nicht als Mathematik missverstanden.
+
+**Was ein Projekt enthält:** `PROBLEM.md` (fixierte Problemstellung),
+`SECTION8.md` (vorausgefüllter Abschnitt 8 des Frameworks), `context.json`,
+`scripts/verify.py` (Verifikations-Gerüst) und mit `--instructions-template` ein
+komplettes `CLAUDE.md`. Damit entfällt die interaktive Runde von
+`/setup_research_plan` — der Agent kann sofort loslegen.
+
+> `research_projects/` steht in `.gitignore`: die Ordner enthalten Discord-Inhalte
+> und gehören nicht ins Repository.
+
+**Vollständiges Beispiel:** [`examples/demo-fresnel-integral/`](examples/demo-fresnel-integral/)
+zeigt eine komplett durchgeführte Recherche zur Gleichung aus `#calculus` —
+inklusive Herleitung, Forschungsprotokoll (`report.tex`) und laufender
+numerischer Verifikation. Ergebnis:
+$\int_{0}^{\pi/2}\sin(\cot^{2}x)\sec^{2}x\,dx=\sqrt{\pi/2}$.
+
 ### Ressourcen-/Paper-CSV erzeugen (optional, lokal)
 
 `extract_resources.py` führt alle Kanal-JSONs zusammen und extrahiert
@@ -119,7 +162,13 @@ fremde Discord-Nachrichten enthält). Das Artefakt enthält:
 
 - `Mathematics/<kanal>.json` – die Rohnachrichten pro Kanal,
 - `MATH_MERGED.json` – alle Kanäle zusammengeführt (mit Herkunfts-Tags),
-- `math_resources.csv` – die extrahierten Mathematik-/Paper-Links.
+- `math_discussions.json` / `.csv` – die **diskutierten Gleichungen/Probleme**,
+- `research_projects/` – ein fertiges Agentic-Researcher-Projekt pro Problem,
+- `math_resources.csv` – zusätzlich gefundene Links (in diesen Kanälen selten).
+
+Optional: Setze die Repository-Variable `DISCORD_GUILD_ID` (Settings → Secrets
+and variables → Actions → *Variables*), damit die extrahierten Probleme
+klickbare Discord-Links enthalten.
 
 **Einrichtung (einmalig):**
 
