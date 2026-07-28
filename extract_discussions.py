@@ -25,16 +25,31 @@ from datetime import datetime, timezone
 # --------------------------------------------------------------------------- #
 # LaTeX detection
 # --------------------------------------------------------------------------- #
-# Ordered: display/fenced forms first so a $$...$$ block is not split into two
-# empty $...$ matches. Each entry is (name, compiled pattern, group index).
+# Every fenced block is located once, in a single left-to-right pass, so a
+# closing ``` can never be mistaken for an opening one. Group 1 is the language
+# tag, group 2 the body.
+FENCE_RE = re.compile(r"```([a-zA-Z0-9_+-]*)[^\S\n]*\n?(.*?)```", re.DOTALL)
+MATH_LANGS = {"math", "latex", "tex"}
+
+# Tried in priority order; a region already claimed by a higher-priority pattern
+# is never re-matched. ``environment`` deliberately comes last so a delimited
+# formula that *contains* \begin{...} is still captured whole.
 LATEX_PATTERNS = [
-    ("fenced", re.compile(r"```(?:math|latex|tex)\s*(.+?)```", re.DOTALL | re.IGNORECASE), 1),
     ("display", re.compile(r"\$\$(.+?)\$\$", re.DOTALL), 1),
     ("bracket", re.compile(r"\\\[(.+?)\\\]", re.DOTALL), 1),
-    ("environment", re.compile(r"(\\begin\{[a-zA-Z*]+\}.+?\\end\{[a-zA-Z*]+\})", re.DOTALL), 1),
-    ("inline", re.compile(r"(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)", re.DOTALL), 1),
+    # Body may not span lines or contain a further '$'. The lookarounds reject a
+    # '$' that is escaped or glued to a word, which is what keeps prices such as
+    # "$20 and $30 used" from being paired up as a formula.
+    ("inline", re.compile(r"(?<![\\$\w])\$(?!\$)([^\n$]{1,400}?)(?<![\\$])\$(?!\$)(?!\w)"), 1),
     ("paren", re.compile(r"\\\((.+?)\\\)", re.DOTALL), 1),
+    # Backreference: \end{} must close the same environment that \begin{} opened,
+    # so nested environments are captured whole instead of truncated.
+    ("environment", re.compile(r"(\\begin\{([a-zA-Z*]+)\}.*?\\end\{\2\})", re.DOTALL), 1),
 ]
+
+# Delimiters that are ambiguous with ordinary prose need a math-content gate.
+GATED_PATTERNS = {"inline", "paren"}
+MATH_CHARS = set("\\^_=<>+/*")
 
 # TeX control sequences that signal real mathematical content (not just "$5").
 MATH_COMMANDS = [
@@ -74,35 +89,75 @@ RENDER_BOTS = {"texit"}
 MIN_LATEX_LEN = 3  # ignore "$x$"-style fragments shorter than this
 
 
-def _strip_code_fences(text: str) -> str:
-    """Remove non-math fenced code blocks so they do not pollute LaTeX matches."""
-    return re.sub(r"```(?!math|latex|tex)[a-zA-Z]*\s*.*?```", " ", text, flags=re.DOTALL)
+def _looks_like_math(snippet: str) -> bool:
+    """Gate for ambiguous delimiters: does this actually look like mathematics?"""
+    return any(ch in MATH_CHARS for ch in snippet) or bool(re.search(r"\\[a-zA-Z]", snippet))
+
+
+def _overlaps(span, claimed) -> bool:
+    start, end = span
+    return any(start < c_end and c_start < end for c_start, c_end in claimed)
 
 
 def extract_latex(content: str) -> list[str]:
-    """Return the LaTeX snippets contained in a message, longest form first.
+    """Return the LaTeX snippets contained in a message.
 
-    Regions already consumed by an earlier (display/fenced) pattern are blanked
-    out before later patterns run, so the same characters are never reported
-    twice.
+    Fenced blocks are resolved first in one pass (math fences yield a snippet,
+    other fences are merely claimed so nothing inside them is matched). The
+    remaining patterns are then applied in priority order, and any match that
+    overlaps an already-claimed region is skipped -- so the same characters are
+    never reported twice and no formula is shredded into fragments.
     """
     if not content:
         return []
-    working = _strip_code_fences(content)
+
     snippets: list[str] = []
-    for _name, pattern, group in LATEX_PATTERNS:
-        for match in pattern.finditer(working):
-            snippet = (match.group(group) or "").strip()
+    claimed: list[tuple[int, int]] = []
+
+    for match in FENCE_RE.finditer(content):
+        claimed.append(match.span())
+        if (match.group(1) or "").lower() in MATH_LANGS:
+            snippet = (match.group(2) or "").strip()
             if len(snippet) >= MIN_LATEX_LEN:
                 snippets.append(snippet)
-        # Blank out consumed spans so later patterns cannot re-match them.
-        working = pattern.sub(lambda m: " " * len(m.group(0)), working)
+
+    for name, pattern, group in LATEX_PATTERNS:
+        pos = 0
+        while pos < len(content):
+            match = pattern.search(content, pos)
+            if not match:
+                break
+            span = match.span()
+            snippet = (match.group(group) or "").strip()
+            rejected = (
+                _overlaps(span, claimed)
+                or len(snippet) < MIN_LATEX_LEN
+                or (name in GATED_PATTERNS and not _looks_like_math(snippet))
+            )
+            if rejected:
+                # Resume just past the OPENING delimiter, not past the whole
+                # rejected match: otherwise a rejected "$20, anyway $" would
+                # swallow the opening '$' of the real formula that follows it.
+                pos = span[0] + 1
+                continue
+            claimed.append(span)
+            snippets.append(snippet)
+            pos = span[1]
+
     return snippets
 
 
+MATH_COMMAND_SET = {cmd.lower() for cmd in MATH_COMMANDS}
+
+
 def count_math_commands(text: str) -> int:
-    lowered = text.lower()
-    return sum(lowered.count(cmd) for cmd in MATH_COMMANDS)
+    """Count TeX control sequences, tokenised.
+
+    Substring counting would score ``\\int`` and ``\\infty`` twice each, because
+    ``\\in`` is a prefix of both.
+    """
+    return sum(1 for token in re.findall(r"\\[a-zA-Z]+", text)
+               if token.lower() in MATH_COMMAND_SET)
 
 
 def has_question_signal(text: str) -> bool:
@@ -121,6 +176,11 @@ def topic_tags(text: str) -> list[str]:
     return tags
 
 
+def msg_id(msg: dict) -> str:
+    """One canonical id representation, so linking never compares 'None' to ''."""
+    return str(msg.get("id") or "")
+
+
 def is_bot(msg: dict) -> bool:
     return bool((msg.get("author") or {}).get("bot"))
 
@@ -135,17 +195,22 @@ def is_render_bot(msg: dict) -> bool:
 
 
 def parse_ts(value: str) -> datetime:
+    """Parse a Discord timestamp, always returning a timezone-aware datetime.
+
+    Mixing naive and aware datetimes would make the per-channel sort raise
+    TypeError and abort the whole extraction, so every path is normalised.
+    """
     if not value:
         return datetime.min.replace(tzinfo=timezone.utc)
+    parsed = None
     try:
-        return datetime.fromisoformat(value)
-    except ValueError:
+        parsed = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
         try:
-            return datetime.strptime(value.split(".")[0], "%Y-%m-%dT%H:%M:%S").replace(
-                tzinfo=timezone.utc
-            )
-        except ValueError:
+            parsed = datetime.strptime(value.split(".")[0], "%Y-%m-%dT%H:%M:%S")
+        except (ValueError, TypeError, AttributeError):
             return datetime.min.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 # --------------------------------------------------------------------------- #
@@ -155,7 +220,9 @@ def score_discussion(latex_snippets, content, rendered, engagement) -> int:
     """Heuristic score for "how much of a real math problem is this"."""
     latex_text = " ".join(latex_snippets)
     score = 0
-    score += 3 * len(latex_snippets)                       # any LaTeX at all
+    # Capped like every other term: a message with a dozen tiny $x$ fragments
+    # must not outrank a genuine problem.
+    score += 3 * min(len(latex_snippets), 5)
     score += min(len(latex_text) // 20, 10)                # longer formula = more content
     score += 2 * min(count_math_commands(latex_text), 10)  # real TeX math commands
     if has_question_signal(content):
@@ -188,13 +255,23 @@ def group_by_channel(messages):
     return channels
 
 
+MAX_RENDER_GAP_SECONDS = 60  # TeXit answers within seconds
+
+
 def find_rendered_ids(ordered: list[dict], window: int = 4) -> set[str]:
     """IDs of user messages that a render bot (TeXit) answered.
 
-    A bot render is linked either through an explicit reply reference or, failing
-    that, to the closest preceding LaTeX-bearing user message within ``window``.
+    An explicit reply reference wins. Without one, the render is paired with the
+    *oldest not-yet-paired* LaTeX message in the preceding window, which matches
+    the order TeXit renders in: when several users post formulas in a burst, k
+    renders pair with k distinct messages instead of all collapsing onto the
+    most recent one. A pairing is only accepted if the render followed within
+    ``MAX_RENDER_GAP_SECONDS``, so a stale message in a quiet channel is not
+    retroactively marked as rendered.
     """
     rendered: set[str] = set()
+    consumed: set[int] = set()  # positions already paired with some render
+
     for idx, msg in enumerate(ordered):
         if not is_render_bot(msg):
             continue
@@ -202,13 +279,25 @@ def find_rendered_ids(ordered: list[dict], window: int = 4) -> set[str]:
         if ref:
             rendered.add(str(ref))
             continue
-        for back in range(idx - 1, max(-1, idx - 1 - window), -1):
+
+        bot_time = parse_ts(msg.get("timestamp", ""))
+        start = max(0, idx - window)
+        for back in range(start, idx):  # oldest first
+            if back in consumed:
+                continue
             candidate = ordered[back]
             if is_bot(candidate):
                 continue
-            if extract_latex(candidate.get("content", "") or ""):
-                rendered.add(str(candidate.get("id")))
-                break
+            if not extract_latex(candidate.get("content", "") or ""):
+                continue
+            gap = (bot_time - parse_ts(candidate.get("timestamp", ""))).total_seconds()
+            if not (0 <= gap <= MAX_RENDER_GAP_SECONDS):
+                continue
+            cid = msg_id(candidate)
+            if cid:
+                rendered.add(cid)
+            consumed.add(back)
+            break
     return rendered
 
 
@@ -246,21 +335,22 @@ def extract_discussions(messages, min_score=8, guild_id=None) -> list[dict]:
             snippets = extract_latex(content)
             if not snippets:
                 continue
-            msg_id = str(msg.get("id", ""))
-            rendered = msg_id in rendered_ids
+            this_id = msg_id(msg)
+            rendered = bool(this_id) and this_id in rendered_ids
             engagement = engagement_of(msg)
             score = score_discussion(snippets, content, rendered, engagement)
             if score < min_score:
                 continue
             primary = max(snippets, key=len)
             results.append({
-                "id": msg_id,
+                "id": this_id,
                 "score": score,
                 "server": server,
                 "channel": channel,
                 "author": author_name(msg),
-                "timestamp": msg.get("timestamp", ""),
-                "date": (msg.get("timestamp", "") or "")[:10],
+                # Normalised: a JSON null here would break the final sort.
+                "timestamp": msg.get("timestamp") or "",
+                "date": (msg.get("timestamp") or "")[:10],
                 "rendered_by_bot": rendered,
                 "is_question": has_question_signal(content),
                 "topics": topic_tags(content + " " + " ".join(snippets)),
@@ -268,8 +358,8 @@ def extract_discussions(messages, min_score=8, guild_id=None) -> list[dict]:
                 "latex_snippets": snippets,
                 "content": content[:2000],
                 "engagement": engagement,
-                "channel_id": str(msg.get("channel_id", "")),
-                "link": build_link(guild_id, msg.get("channel_id"), msg_id),
+                "channel_id": str(msg.get("channel_id", "") or ""),
+                "link": build_link(guild_id, msg.get("channel_id"), this_id),
                 "context": conversation_context(ordered, idx),
             })
     results.sort(key=lambda r: (-r["score"], r["timestamp"]))
@@ -285,31 +375,51 @@ CSV_FIELDS = [
 ]
 
 
+def _csv_safe(value):
+    """Neutralise spreadsheet formula injection (CWE-1236).
+
+    Message text is fully attacker-controlled; a cell starting with =, +, -, @
+    or a control character is executed as a formula when opened in Excel.
+    """
+    text = "" if value is None else str(value)
+    if text[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + text
+    return text
+
+
 def write_csv(rows, path):
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS, delimiter=";")
         writer.writeheader()
         for row in rows:
             writer.writerow({
                 "Score": row["score"],
-                "Channel": row["channel"],
-                "Author": row["author"],
-                "Date": row["date"],
-                "Topics": ",".join(row["topics"]),
+                "Channel": _csv_safe(row["channel"]),
+                "Author": _csv_safe(row["author"]),
+                "Date": _csv_safe(row["date"]),
+                "Topics": _csv_safe(",".join(row["topics"])),
                 "Rendered": "yes" if row["rendered_by_bot"] else "no",
                 "IsQuestion": "yes" if row["is_question"] else "no",
                 # Keep the CSV one-line-per-row: newlines would break Excel import.
-                "PrimaryLatex": row["primary_latex"].replace("\n", " ")[:500],
-                "Content": row["content"].replace("\n", " ")[:500],
-                "Link": row["link"],
+                "PrimaryLatex": _csv_safe(" ".join(row["primary_latex"].split())[:500]),
+                "Content": _csv_safe(" ".join(row["content"].split())[:500]),
+                "Link": _csv_safe(row["link"]),
             })
 
 
 def load_messages(input_path, base_dir):
     """Load the merged JSON if present, else walk the per-channel exports."""
-    if input_path and os.path.isfile(input_path):
+    if input_path:
+        # An explicitly requested file that is missing is an error, not a reason
+        # to silently fall back and report "0 discussions" with exit code 0.
+        if not os.path.isfile(input_path):
+            raise SystemExit(f"Eingabedatei nicht gefunden: {input_path}")
         with open(input_path, "r", encoding="utf-8") as fh:
-            return json.load(fh)
+            data = json.load(fh)
+        if not isinstance(data, list):
+            raise SystemExit(f"Eingabedatei enthält keine Nachrichtenliste: {input_path}")
+        return [m for m in data if isinstance(m, dict)]
 
     messages = []
     if not os.path.isdir(base_dir):
@@ -351,8 +461,13 @@ def run(base_dir, input_path=None, json_out=None, csv_out=None, min_score=8, gui
     csv_out = csv_out or os.path.join(base_dir, "math_discussions.csv")
     os.makedirs(os.path.dirname(os.path.abspath(json_out)), exist_ok=True)
 
-    with open(json_out, "w", encoding="utf-8") as fh:
-        json.dump(discussions, fh, indent=2, ensure_ascii=False)
+    # Serialise fully, then replace atomically: a failure part-way through must
+    # not leave a truncated file where a good one used to be.
+    payload = json.dumps(discussions, indent=2, ensure_ascii=False)
+    tmp_path = json_out + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8", errors="replace") as fh:
+        fh.write(payload)
+    os.replace(tmp_path, json_out)
     write_csv(discussions, csv_out)
 
     print(f"{len(discussions)} diskutierte Probleme gefunden (min-score {min_score}).")

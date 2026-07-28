@@ -37,31 +37,77 @@ SECTION8_HEADING = "## 8. Project Instructions"
 
 # Verification script dropped into each project so the agent has a starting point
 # that already encodes "derive symbolically, then check numerically".
-VERIFY_STUB = '''#!/usr/bin/env python3
+VERIFY_STUB_NUMERIC = '''#!/usr/bin/env python3
 """Numerical check for the conjectured closed form.
 
-Fill in ``integrand``/``conjectured`` (or replace wholesale for non-integral
-problems), then run:  uv run python scripts/verify.py
-Commandment II: never tune this check to make a wrong result pass.
+Encode the problem from PROBLEM.md below, then run:
+    uv run python scripts/verify.py
+
+Commandment II: never tune this check to make a wrong result pass, and always
+evaluate the ORIGINAL expression here -- never the derived one.
 """
 
 import mpmath as mp
 
 mp.mp.dps = 30
 
-# TODO: replace with the actual problem.
+# TODO: the integration domain taken from PROBLEM.md, e.g. [0, mp.pi/2] or
+# [0, mp.inf]. Split it at any oscillatory or singular endpoint.
+DOMAIN = None
+
+
 def integrand(x):
-    raise NotImplementedError("encode the problem from PROBLEM.md here")
+    raise NotImplementedError("encode the ORIGINAL expression from PROBLEM.md here")
+
 
 def conjectured():
     raise NotImplementedError("encode the derived closed form here")
 
+
 if __name__ == "__main__":
-    numeric = mp.quad(integrand, [0, mp.pi / 2])
+    if DOMAIN is None:
+        raise SystemExit("DOMAIN is unset -- take the domain from PROBLEM.md first.")
+    numeric = mp.quad(integrand, DOMAIN)
     closed = conjectured()
-    print(f"numeric  = {numeric}")
-    print(f"closed   = {closed}")
-    print(f"abs diff = {abs(numeric - closed)}")
+    diff = abs(numeric - closed)
+    print(f"numeric  = {mp.nstr(numeric, 25)}")
+    print(f"closed   = {mp.nstr(closed, 25)}")
+    print(f"abs diff = {mp.nstr(diff, 5)}")
+    raise SystemExit(0 if diff < mp.mpf("1e-15") else 1)
+'''
+
+VERIFY_STUB_PROOF = '''#!/usr/bin/env python3
+"""Randomised counterexample search for the claim in PROBLEM.md.
+
+This does NOT prove the claim -- it can only refute it. The proof itself belongs
+in report.tex; this script guards against wasting effort on a false statement.
+
+    uv run python scripts/verify.py
+"""
+
+import random
+
+TRIALS = 1_000_000
+
+
+def sample():
+    """TODO: draw one random instance of the objects in the claim."""
+    raise NotImplementedError("encode the instance space from PROBLEM.md here")
+
+
+def holds(instance) -> bool:
+    """TODO: evaluate the claim on one instance. Return False if it fails."""
+    raise NotImplementedError("encode the claim from PROBLEM.md here")
+
+
+if __name__ == "__main__":
+    random.seed(0)  # reproducible; vary the seed for an independent run
+    for i in range(TRIALS):
+        instance = sample()
+        if not holds(instance):
+            print(f"COUNTEREXAMPLE after {i} trials: {instance!r}")
+            raise SystemExit(1)
+    print(f"no counterexample in {TRIALS} trials (this is NOT a proof)")
 '''
 
 
@@ -73,6 +119,24 @@ def slugify(text: str, max_len: int = 48) -> str:
     if not text:
         text = "problem"
     return text[:max_len].strip("-")
+
+
+def fence_for(*payloads) -> str:
+    """A fence longer than any backtick run in the payload.
+
+    Discord messages routinely contain ``` themselves; a fixed three-backtick
+    fence would be closed early and swallow the rest of the document.
+    """
+    longest = 0
+    for payload in payloads:
+        for run in re.findall(r"`+", payload or ""):
+            longest = max(longest, len(run))
+    return "`" * max(3, longest + 1)
+
+
+def one_line(text: str, limit: int) -> str:
+    """Collapse whitespace so multi-line LaTeX cannot break a heading or cell."""
+    return " ".join((text or "").split())[:limit]
 
 
 def format_context(context) -> str:
@@ -88,11 +152,14 @@ def format_context(context) -> str:
 
 
 def problem_md(item: dict) -> str:
-    latex_blocks = "\n\n".join(f"```latex\n{snippet}\n```" for snippet in item["latex_snippets"])
+    snippets = item["latex_snippets"]
+    lf = fence_for(*snippets)
+    latex_blocks = "\n\n".join(f"{lf}latex\n{snippet}\n{lf}" for snippet in snippets)
+    cf = fence_for(item["content"])
     topics = ", ".join(item["topics"]) or "-"
     link = item.get("link") or "(kein Link -- Guild-ID beim Extrahieren nicht gesetzt)"
     rendered = "ja (TeXit hat die Formel gerendert)" if item["rendered_by_bot"] else "nein"
-    return f"""# Diskutiertes Problem: {item['primary_latex'][:80]}
+    return f"""# Diskutiertes Problem: {one_line(item['primary_latex'], 80)}
 
 Automatisch extrahiert aus dem Discord-Kanal **#{item['channel']}**
 (Server: {item['server']}). Diese Datei ist die *Problemstellung* -- sie darf vom
@@ -104,9 +171,9 @@ Research-Agent **nicht** verändert werden (Commandment II).
 
 ## Originalnachricht
 
-```
+{cf}
 {item['content']}
-```
+{cf}
 
 ## Metadaten
 
@@ -128,54 +195,84 @@ Research-Agent **nicht** verändert werden (Commandment II).
 """
 
 
-def section8_md(item: dict) -> str:
-    """Section 8 filled for a *mathematical* problem.
+# Topics that admit a numeric ground truth; anything else is treated as a proof
+# obligation, where "deviation from a closed form" would be unsatisfiable.
+QUANTITATIVE_TOPICS = {"integral", "series", "limit", "derivative", "probability"}
 
-    The framework's template is written with ML training runs in mind; the
-    mapping here keeps its contract (fixed evaluation, minimum decision scale)
-    but expresses it for a derivation: the metric is agreement between the
-    derived closed form and a high-precision numerical evaluation.
-    """
-    topics = ", ".join(item["topics"]) or "allgemeine Mathematik"
-    link = item.get("link") or "(kein Link verfügbar)"
-    return f"""{SECTION8_HEADING}
 
-**Goal:** Resolve the mathematical problem discussed in the Discord channel
-`#{item['channel']}`. Produce a rigorous, self-contained solution: a step-by-step
-derivation (or proof), the closed form / final result, and an independent
-numerical verification. The problem is:
+def is_quantitative(item: dict) -> bool:
+    return bool(set(item.get("topics") or []) & QUANTITATIVE_TOPICS)
 
-```latex
-{item['primary_latex']}
-```
 
-**Primary Metric:**
+def _metric_block(item: dict) -> str:
+    if is_quantitative(item):
+        return """**Primary Metric:**
 - Name: absolute deviation between the derived closed form and a high-precision
   numerical evaluation of the original expression
 - Direction: lower is better (target: < 1e-15 with `mp.dps = 30`)
 - Eval command: `uv run python scripts/verify.py`
 - Baseline: TBD (no result derived yet)
 
-**Fixed Constraints (protected by Commandment II):**
-- The problem statement in `PROBLEM.md` is immutable -- do not simplify, re-scope,
-  or "fix" the integrand/expression to make it tractable
-- The numerical verification must evaluate the ORIGINAL expression, never the
-  derived form, otherwise it verifies nothing
-- If the result diverges or the statement is ill-posed, say so and prove it; a
-  rigorous negative result counts as success
-
 **Minimum Decision Scale (Commandment VII):**
 - Numerical agreement must hold at >= 15 significant digits (mpmath `mp.dps = 30`)
 - Spot checks at a single precision or a single sample point are debugging-only
 - Beware oscillatory or singular endpoints: plain quadrature can silently
   under-resolve them and report a confidently wrong value. Split the domain or
-  use oscillatory quadrature, and always sanity-check with an assumption-free bound
+  use oscillatory quadrature, and always sanity-check with an assumption-free bound"""
+    return """**Primary Metric:**
+- Name: proof completeness -- every step either justified from stated axioms and
+  cited theorems, or refuted by an explicit counterexample
+- Direction: no unjustified step may remain; a rigorous refutation is also success
+- Eval command: `uv run python scripts/verify.py` (randomised counterexample search)
+- Baseline: TBD (no proof attempted yet)
+
+**Minimum Decision Scale (Commandment VII):**
+- A claim survives only after a randomised search over >= 1e6 instances finds no
+  counterexample AND every proof step is justified; passing the search alone
+  proves nothing
+- Hand-checking two or three small cases is debugging-only"""
+
+
+def section8_md(item: dict) -> str:
+    """Section 8 filled for a *mathematical* problem.
+
+    The framework's template is written with ML training runs in mind. The
+    mapping here keeps its contract (fixed evaluation, minimum decision scale)
+    but expresses it for mathematics -- and distinguishes problems with a numeric
+    ground truth from proof obligations, where a numeric deviation metric would
+    be meaningless.
+    """
+    topics = ", ".join(item["topics"]) or "allgemeine Mathematik"
+    link = item.get("link") or "(kein Link verfügbar)"
+    lf = fence_for(item["primary_latex"])
+    quantitative = is_quantitative(item)
+    return f"""{SECTION8_HEADING}
+
+**Goal:** Resolve the mathematical problem discussed in the Discord channel
+`#{item['channel']}`. Produce a rigorous, self-contained solution: a step-by-step
+derivation (or proof), the final result, and an independent verification. The
+problem is:
+
+{lf}latex
+{item['primary_latex']}
+{lf}
+
+{_metric_block(item)}
+
+**Fixed Constraints (protected by Commandment II):**
+- The problem statement in `PROBLEM.md` is immutable -- do not simplify, re-scope,
+  or "fix" the expression to make it tractable
+- The verification must exercise the ORIGINAL statement, never the derived form,
+  otherwise it verifies nothing
+- If the statement is false or ill-posed, say so and prove it; a rigorous
+  negative result counts as success
 
 **Approach Guidelines:**
 1. Restate the problem precisely; define every symbol, domain, and branch choice
 2. Derive symbolically by hand first (Commandment M2: derivations before code);
    note substitutions and where convergence conditions are used
-3. Only then verify numerically with mpmath at high precision
+{'3. Only then verify numerically with mpmath at high precision' if quantitative
+ else '3. Only then write the counterexample search; it complements the proof, never replaces it'}
 4. Cross-check against a CAS (sympy) where possible, and search for the standard
    name of the result (e.g. Fresnel, Dirichlet, Frullani) to flag rediscovery
 5. Record every step in `report.tex`
@@ -202,17 +299,40 @@ numerical verification. The problem is:
 
 
 def render_claude_md(template_text: str, section8: str) -> str:
-    """Replace the template's Section 8 with the pre-filled one."""
+    """Replace the template's Section 8, preserving anything that follows it.
+
+    Truncating at the heading would silently drop every later section of the
+    framework's instructions.
+    """
     idx = template_text.find(SECTION8_HEADING)
     if idx == -1:
         return template_text.rstrip() + "\n\n" + section8
-    return template_text[:idx] + section8
+    end = template_text.find("\n## ", idx + len(SECTION8_HEADING))
+    tail = template_text[end:] if end != -1 else ""
+    return template_text[:idx] + section8.rstrip() + "\n" + tail
 
 
 def write_project(item, index, out_dir, template_text=None, with_verify=True):
+    # Named by the Discord message id, which is globally unique and STABLE across
+    # runs. A positional index is not: on the next crawl a different problem
+    # could land on the same number and silently overwrite the agent's work.
+    ident = slugify(str(item.get("id") or f"idx{index}"), 24) or f"idx{index}"
     slug = slugify(item["primary_latex"])
-    name = f"{index:03d}-{slugify(item['channel'], 20)}-{slug}"
+    name = f"{ident}-{slugify(item['channel'], 20)}-{slug}"
     path = os.path.join(out_dir, name)
+
+    existing = os.path.join(path, "context.json")
+    if os.path.isfile(existing):
+        try:
+            with open(existing, "r", encoding="utf-8") as fh:
+                if str(json.load(fh).get("id") or "") != str(item.get("id") or ""):
+                    raise SystemExit(
+                        f"Projektordner {path} gehört zu einem anderen Problem - "
+                        "Abbruch statt Überschreiben."
+                    )
+        except (OSError, ValueError):
+            pass  # unreadable leftover: treat as ours and rewrite
+
     os.makedirs(path, exist_ok=True)
 
     section8 = section8_md(item)
@@ -231,8 +351,9 @@ def write_project(item, index, out_dir, template_text=None, with_verify=True):
         scripts_dir = os.path.join(path, "scripts")
         os.makedirs(scripts_dir, exist_ok=True)
         verify_path = os.path.join(scripts_dir, "verify.py")
+        stub = VERIFY_STUB_NUMERIC if is_quantitative(item) else VERIFY_STUB_PROOF
         with open(verify_path, "w", encoding="utf-8") as fh:
-            fh.write(VERIFY_STUB)
+            fh.write(stub)
         os.chmod(verify_path, 0o755)
 
     return name, path
@@ -271,7 +392,7 @@ def write_index(items, names, out_dir, has_template):
               "| # | Projekt | Kanal | Score | Themen | Problem |",
               "| --- | --- | --- | --- | --- | --- |"]
     for pos, (item, name) in enumerate(zip(items, names), start=1):
-        latex = item["primary_latex"].replace("\n", " ").replace("|", "\\|")[:60]
+        latex = one_line(item["primary_latex"], 60).replace("|", "\\|")
         topics = ", ".join(item["topics"]) or "-"
         lines.append(
             f"| {pos} | [`{name}`]({name}/PROBLEM.md) | #{item['channel']} | "
@@ -283,8 +404,19 @@ def write_index(items, names, out_dir, has_template):
 
 
 def run(discussions_path, out_dir, template_path=None, limit=None, min_score=None):
-    with open(discussions_path, "r", encoding="utf-8") as fh:
-        items = json.load(fh)
+    if not os.path.isfile(discussions_path):
+        raise SystemExit(
+            f"Diskussions-Datei nicht gefunden: {discussions_path}\n"
+            "Zuerst extract_discussions.py laufen lassen."
+        )
+    try:
+        with open(discussions_path, "r", encoding="utf-8") as fh:
+            items = json.load(fh)
+    except ValueError as exc:
+        raise SystemExit(f"Diskussions-Datei ist beschädigt ({discussions_path}): {exc}")
+    if not isinstance(items, list):
+        raise SystemExit(f"Diskussions-Datei enthält keine Liste: {discussions_path}")
+    items = [i for i in items if isinstance(i, dict)]
 
     if min_score is not None:
         items = [i for i in items if i.get("score", 0) >= min_score]
